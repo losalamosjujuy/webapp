@@ -120,6 +120,21 @@ Copy `.env.example` and set:
 6. Run `supabase/migrations/006_production_auth_and_rls_hardening.sql`.
 7. Run `supabase/migrations/007_reservation_request_otp_flow.sql`.
 8. Create the first admin user in Supabase Auth and then run `supabase/scripts/production_admin_bootstrap.sql`.
+9. Alternativamente, crea y confirma el admin de una sola vez con `npm run admin:create` usando `ADMIN_EMAIL`, `ADMIN_PASSWORD` y opcionalmente `ADMIN_FULL_NAME`.
+
+### Admin bootstrap recomendado
+
+Para evitar enlaces de confirmación con `localhost`, usar el script administrativo con service role:
+
+```bash
+ADMIN_EMAIL=losalamosjujuy@gmail.com ADMIN_PASSWORD="cambiar-por-password-segura" npm run admin:create
+```
+
+El script:
+
+- crea el usuario en `auth.users` si no existe
+- lo deja con `email_confirm: true`
+- actualiza o crea `public.profiles` con rol `admin`
 
 ### Deployment notes
 

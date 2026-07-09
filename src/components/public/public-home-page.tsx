@@ -40,6 +40,7 @@ import {
   persistInquiryToAdminDemo,
   type PublicInfoModalId
 } from "@/lib/public-site";
+import { buildPricingPreview } from "@/lib/pricing/pricing";
 import { formatCurrency } from "@/lib/utils/format";
 import { resolvePublicImage } from "@/lib/utils/images";
 import { inquirySchema, reservationRequestSchema } from "@/lib/validations/reservation";
@@ -1067,6 +1068,23 @@ function PublicBookingModal({
       estimatedArrivalTime: defaultValues?.estimatedArrivalTime ?? ""
     }
   });
+  const watchedUnitId = form.watch("unitId");
+  const watchedCheckIn = form.watch("checkIn");
+  const watchedCheckOut = form.watch("checkOut");
+  const selectedUnit = useMemo(
+    () => units.find((unit) => unit.id === watchedUnitId),
+    [units, watchedUnitId]
+  );
+  const pricingPreview = useMemo(
+    () =>
+      buildPricingPreview({
+        checkIn: watchedCheckIn,
+        checkOut: watchedCheckOut,
+        basePricePerNight: selectedUnit?.basePricePerNight,
+        cleaningFee: selectedUnit?.cleaningFee
+      }),
+    [selectedUnit, watchedCheckIn, watchedCheckOut]
+  );
 
   useEffect(() => {
     form.reset({
@@ -1276,6 +1294,34 @@ function PublicBookingModal({
             Hora estimada de llegada
             <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" placeholder="18:30" {...form.register("estimatedArrivalTime")} />
           </label>
+          <div className="rounded-[18px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-4 md:col-span-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+              Resumen de la reserva
+            </p>
+            {selectedUnit && pricingPreview ? (
+              <div className="mt-3 space-y-2 text-sm text-[var(--color-ink-2)]">
+                <div className="flex items-center justify-between gap-4">
+                  <span>
+                    {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"} x{" "}
+                    {formatCurrency(pricingPreview.basePricePerNight, "ARS")}
+                  </span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Limpieza</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-[var(--color-rule)] pt-2 text-base">
+                  <span className="font-semibold text-[var(--color-ink)]">Total estimado</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm text-[var(--color-ink-2)]">
+                Elegí una unidad y completá check-in y check-out para ver el total antes de pagar.
+              </p>
+            )}
+          </div>
           {form.formState.errors.checkOut ? <p className="text-sm text-[var(--color-danger)] md:col-span-2">{form.formState.errors.checkOut.message}</p> : null}
           {requestError ? <p className="text-sm text-[var(--color-danger)] md:col-span-2">{requestError}</p> : null}
           <div className="flex justify-end md:col-span-2">
@@ -1290,6 +1336,27 @@ function PublicBookingModal({
           <p className="rounded-[18px] bg-[oklch(0.97_0.01_80)] px-4 py-3 text-sm text-[var(--color-ink-2)]">
             {"Te enviamos un c\u00F3digo a "}<strong>{maskedEmail}</strong>{". Ingr\u00E9salo para continuar con el pago."}
           </p>
+          {selectedUnit && pricingPreview ? (
+            <div className="rounded-[18px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                Total a pagar
+              </p>
+              <div className="mt-3 space-y-2 text-sm text-[var(--color-ink-2)]">
+                <div className="flex items-center justify-between gap-4">
+                  <span>{selectedUnit.name}</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Limpieza</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-[var(--color-rule)] pt-2 text-base">
+                  <span className="font-semibold text-[var(--color-ink)]">Total final</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <label className="block text-sm text-[var(--color-ink-2)]">
             {"C\u00F3digo OTP"}
             <Input

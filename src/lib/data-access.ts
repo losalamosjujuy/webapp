@@ -731,27 +731,14 @@ function quoteReservationStay({
 }) {
   const nights = calculateNights(checkIn, checkOut);
   const defaultPlan = getDefaultRatePlan(unit, ratePlans);
-  const perDateInventory = inventory.filter((item) => item.unitId === unit.id && item.date >= checkIn && item.date < checkOut);
-
-  const subtotal = Array.from({ length: nights }).reduce<number>((sum, _, index) => {
-    const date = new Date(checkIn);
-    date.setUTCDate(date.getUTCDate() + index);
-    const key = date.toISOString().slice(0, 10);
-    const inventoryRecord = perDateInventory.find((item) => item.date === key);
-    const nightlyRate =
-      inventoryRecord?.baseRate ??
-      defaultPlan?.basePricePerNight ??
-      unit.basePricePerNight;
-
-    return sum + nightlyRate;
-  }, 0);
+  const subtotal = unit.basePricePerNight * nights;
 
   return {
     nights,
     subtotal,
     cleaningFee: unit.cleaningFee,
     total: subtotal + unit.cleaningFee,
-    currency: defaultPlan?.currency ?? "ARS",
+    currency: "ARS",
     ratePlan: defaultPlan
   };
 }
@@ -1399,6 +1386,14 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
     throw new Error("La disponibilidad cambió. Vuelve a consultar antes de pagar.");
   }
 
+  const currentPricing = quoteReservationStay({
+    checkIn: request.checkIn,
+    checkOut: request.checkOut,
+    unit: selectedUnit,
+    ratePlans: [],
+    inventory: []
+  });
+
   const holdExpiresAt = addMinutes(now, RESERVATION_HOLD_MINUTES).toISOString();
   const reservationCode = `LAT-${Date.now().toString().slice(-6)}`;
 
@@ -1438,11 +1433,11 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
       checkOut: request.checkOut,
       adults: request.adults,
       children: request.children,
-      nights: request.nights,
-      subtotal: request.subtotal,
-      cleaningFee: request.cleaningFee,
-      totalAmount: request.totalAmount,
-      currency: request.currency,
+      nights: currentPricing.nights,
+      subtotal: currentPricing.subtotal,
+      cleaningFee: currentPricing.cleaningFee,
+      totalAmount: currentPricing.total,
+      currency: currentPricing.currency,
       specialRequests: request.specialNotes,
       estimatedArrivalTime: request.estimatedArrivalTime,
       createdAt: now.toISOString()
@@ -1482,9 +1477,9 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
 
   checkout = await createMercadoPagoPreference({
     reservationCode,
-    title: `${selectedUnit.name} - ${request.nights} noches`,
-    amount: request.totalAmount,
-    currency: request.currency,
+    title: `${selectedUnit.name} - ${currentPricing.nights} noches`,
+    amount: currentPricing.total,
+    currency: currentPricing.currency,
     payerName: request.fullName,
     payerEmail: request.email
   });
@@ -1538,11 +1533,11 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
       check_out: request.checkOut,
       adults: request.adults,
       children: request.children,
-      nights: request.nights,
-      subtotal: request.subtotal,
-      cleaning_fee: request.cleaningFee,
-      total_amount: request.totalAmount,
-      currency: request.currency,
+      nights: currentPricing.nights,
+      subtotal: currentPricing.subtotal,
+      cleaning_fee: currentPricing.cleaningFee,
+      total_amount: currentPricing.total,
+      currency: currentPricing.currency,
       special_requests: request.specialNotes ?? null,
       estimated_arrival_time: request.estimatedArrivalTime ?? null
     })
@@ -1562,8 +1557,8 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
         reservation_id: reservationRow.id,
         provider: "mercado_pago",
         status: "pending",
-        amount: request.totalAmount,
-        currency: request.currency,
+        amount: currentPricing.total,
+        currency: currentPricing.currency,
         external_reference: reservationCode,
         checkout_url: checkout.checkoutUrl ?? null,
         provider_preference_id: checkout.preferenceId,
@@ -1593,6 +1588,11 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
     supabase
       .from("reservation_requests")
       .update({
+        nights: currentPricing.nights,
+        subtotal: currentPricing.subtotal,
+        cleaning_fee: currentPricing.cleaningFee,
+        total_amount: currentPricing.total,
+        currency: currentPricing.currency,
         status: "checkout_created",
         reservation_id: reservationRow.id
       })
@@ -2756,6 +2756,38 @@ export async function upsertUnit(payload: {
 
   if (unitResult.error || !unitResult.data) {
     throw unitResult.error ?? new Error("Unable to save unit.");
+  }
+
+  const generatedRatePlanCode = `${slug.toUpperCase().replace(/-/g, "_") || "UNIT"}_STD`;
+  const { data: existingDefaultRatePlan, error: existingDefaultRatePlanError } = await supabase
+    .from("rate_plans")
+    .select("code")
+    .eq("unit_id", unitResult.data.id)
+    .eq("is_default", true)
+    .limit(1)
+    .maybeSingle();
+
+  if (existingDefaultRatePlanError) {
+    throw existingDefaultRatePlanError;
+  }
+
+  const defaultRatePlanCode = existingDefaultRatePlan?.code ?? generatedRatePlanCode;
+  const { error: ratePlanSyncError } = await supabase
+    .from("rate_plans")
+    .upsert({
+      unit_id: unitResult.data.id,
+      code: defaultRatePlanCode,
+      name: `Tarifa Flexible ${payload.name}`,
+      description: `Tarifa base para ${payload.name}.`,
+      currency: "ARS",
+      pricing_mode: "per_night",
+      base_price_per_night: payload.price,
+      is_default: true,
+      active
+    }, { onConflict: "unit_id,code" });
+
+  if (ratePlanSyncError) {
+    throw ratePlanSyncError;
   }
 
   if (payload.uploads?.length) {

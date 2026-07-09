@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { buildPricingPreview } from "@/lib/pricing/pricing";
+import { formatCurrency } from "@/lib/utils/format";
 import { reservationRequestSchema } from "@/lib/validations/reservation";
 import type { Unit } from "@/types/domain";
 
@@ -34,6 +36,23 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
       children: 0
     }
   });
+  const watchedUnitId = form.watch("unitId");
+  const watchedCheckIn = form.watch("checkIn");
+  const watchedCheckOut = form.watch("checkOut");
+  const selectedUnit = useMemo(
+    () => units.find((unit) => unit.id === watchedUnitId),
+    [units, watchedUnitId]
+  );
+  const pricingPreview = useMemo(
+    () =>
+      buildPricingPreview({
+        checkIn: watchedCheckIn,
+        checkOut: watchedCheckOut,
+        basePricePerNight: selectedUnit?.basePricePerNight,
+        cleaningFee: selectedUnit?.cleaningFee
+      }),
+    [selectedUnit, watchedCheckIn, watchedCheckOut]
+  );
 
   async function onSubmit(values: FormValues) {
     setRequestId(null);
@@ -237,6 +256,34 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
               Hora estimada de llegada
               <Input placeholder="18:30" {...form.register("estimatedArrivalTime")} />
             </label>
+            <div className="rounded-2xl border border-sand-200 bg-sand-50 p-4 md:col-span-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sand-700">
+                Resumen de la reserva
+              </p>
+              {selectedUnit && pricingPreview ? (
+                <div className="mt-3 space-y-2 text-sm text-sand-700">
+                  <div className="flex items-center justify-between gap-4">
+                    <span>
+                      {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"} x{" "}
+                      {formatCurrency(pricingPreview.basePricePerNight, "ARS")}
+                    </span>
+                    <strong className="text-night">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Limpieza</span>
+                    <strong className="text-night">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 border-t border-sand-200 pt-2 text-base">
+                    <span className="font-semibold text-night">Total estimado</span>
+                    <strong className="text-night">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 text-sm text-sand-700">
+                  Elegí una unidad y completá check-in y check-out para ver el total antes de pagar.
+                </p>
+              )}
+            </div>
             <div className="flex items-end">
               <Button className="w-full" type="submit">
                 {form.formState.isSubmitting ? "Enviando c\u00F3digo..." : "Enviar c\u00F3digo de verificaci\u00F3n"}
@@ -251,6 +298,25 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
           <p className="rounded-2xl bg-agave/10 p-4 text-sm text-agave">
             {"Te enviamos un c\u00F3digo a "}<strong>{maskedEmail}</strong>{". Ingresalo para continuar al pago."}
           </p>
+          {selectedUnit && pricingPreview ? (
+            <div className="rounded-2xl border border-sand-200 bg-sand-50 p-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sand-700">Total a pagar</p>
+              <div className="mt-3 space-y-2 text-sm text-sand-700">
+                <div className="flex items-center justify-between gap-4">
+                  <span>{selectedUnit.name}</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Limpieza</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4 border-t border-sand-200 pt-2 text-base">
+                  <span className="font-semibold text-night">Total final</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <label className="block text-sm text-sand-700">
             C\u00F3digo OTP
             <Input
