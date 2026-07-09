@@ -16,7 +16,6 @@ Configurar en `.env.local`:
 RESEND_API_KEY=tu-api-key-de-resend
 RESERVATION_OTP_FROM_EMAIL=onboarding@resend.dev
 RESERVATION_OTP_REPLY_TO_EMAIL=losalamosjujuy@gmail.com
-RESERVATION_OTP_TEST_RECIPIENT_EMAIL=losalamosjujuy@gmail.com
 
 MERCADO_PAGO_ACCESS_TOKEN=tu-access-token-de-prueba
 MERCADO_PAGO_WEBHOOK_SECRET=tu-webhook-secret-de-prueba
@@ -26,8 +25,7 @@ NEXT_PUBLIC_SITE_URL=http://localhost:3000
 
 ## Comportamiento de prueba implementado
 
-- Si `RESERVATION_OTP_TEST_RECIPIENT_EMAIL` está definido y la app no corre en `production`, todos los OTP se redirigen a ese email.
-- El cuerpo del email deja visible cuál era el destinatario original.
+- El OTP se envía siempre al email cargado por el huésped.
 - Si `MERCADO_PAGO_USE_SANDBOX=true`, el checkout prioriza `sandbox_init_point`.
 
 ## Resend
@@ -55,7 +53,7 @@ Flujo recomendado:
 ## Validación manual mínima
 
 1. Completar formulario de reserva.
-2. Confirmar que llega el OTP a `losalamosjujuy@gmail.com`.
+2. Confirmar que llega el OTP al email que se cargó en el formulario.
 3. Ingresar el código OTP.
 4. Confirmar redirección a checkout demo de Mercado Pago.
 5. Completar pago de prueba.

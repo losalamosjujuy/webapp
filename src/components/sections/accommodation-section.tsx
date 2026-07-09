@@ -6,6 +6,7 @@ import { Container } from "@/components/layout/container";
 import { Card } from "@/components/ui/card";
 import { SectionHeading } from "@/components/ui/section-heading";
 import { formatCurrency } from "@/lib/utils/format";
+import { resolvePublicImage } from "@/lib/utils/images";
 import type { Unit } from "@/types/domain";
 
 export function AccommodationSection({ units }: { units: Unit[] }) {
@@ -21,7 +22,12 @@ export function AccommodationSection({ units }: { units: Unit[] }) {
           {units.map((unit) => (
             <Card className="overflow-hidden" key={unit.id}>
               <div className="relative h-72">
-                <Image alt={unit.images[0]?.altText ?? unit.name} fill src={unit.featuredImage} className="object-cover" />
+                <Image
+                  alt={unit.images[0]?.altText ?? unit.name}
+                  fill
+                  src={resolvePublicImage(unit.featuredImage)}
+                  className="object-cover"
+                />
               </div>
               <div className="p-6">
                 <div className="flex items-start justify-between gap-4">

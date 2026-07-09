@@ -2,6 +2,8 @@ import Image from "next/image";
 
 import { Container } from "@/components/layout/container";
 import { SectionHeading } from "@/components/ui/section-heading";
+import { propertyImages } from "@/data/property-images";
+import { resolvePublicImage } from "@/lib/utils/images";
 import type { Unit } from "@/types/domain";
 
 export function GallerySection({ units }: { units: Unit[] }) {
@@ -23,7 +25,12 @@ export function GallerySection({ units }: { units: Unit[] }) {
               className={index % 3 === 0 ? "relative min-h-80 overflow-hidden rounded-3xl md:col-span-2" : "relative min-h-80 overflow-hidden rounded-3xl"}
               key={image.id}
             >
-              <Image alt={image.altText} fill src={image.imageUrl} className="object-cover" />
+              <Image
+                alt={image.altText}
+                fill
+                src={resolvePublicImage(image.imageUrl, propertyImages.gallery)}
+                className="object-cover"
+              />
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-6 text-white">
                 <p className="text-sm">{image.unitName}</p>
               </div>

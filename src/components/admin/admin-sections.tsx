@@ -36,8 +36,10 @@ import {
 
 import { useAdmin } from "@/components/admin/admin-provider";
 import { AdminShell } from "@/components/admin/admin-shell";
+import { propertyImages } from "@/data/property-images";
 import { cn } from "@/lib/utils/cn";
 import { formatCurrency, formatDate } from "@/lib/utils/format";
+import { resolvePublicImage } from "@/lib/utils/images";
 import type {
   AdminAvailabilityBlock,
   AdminFaqItem,
@@ -288,7 +290,7 @@ function OccupancyGrid({
             >
               <div key={`${unit.id}-label`} className="flex items-center gap-3 rounded-2xl border border-[#f0e5db] p-3">
                 <div className="relative h-11 w-11 overflow-hidden rounded-xl">
-                  <Image alt={unit.name} fill src={unit.image} className="object-cover" />
+                  <Image alt={unit.name} fill src={resolvePublicImage(unit.image, propertyImages.roomDouble)} className="object-cover" />
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-[#241b16]">{unit.name}</p>
@@ -664,7 +666,7 @@ export function AdminDashboardSection() {
               {state.units.map((unit) => (
                 <div key={unit.id} className="flex items-center gap-4 rounded-2xl border border-[#f1e5da] px-3 py-3">
                   <div className="relative h-14 w-14 overflow-hidden rounded-xl">
-                    <Image alt={unit.name} fill src={unit.image} className="object-cover" />
+                    <Image alt={unit.name} fill src={resolvePublicImage(unit.image, propertyImages.roomDouble)} className="object-cover" />
                   </div>
                   <div className="flex-1">
                     <p className="text-sm font-semibold text-[#241b16]">{unit.name}</p>
@@ -1039,7 +1041,7 @@ export function UnitsSection() {
           {state.units.map((unit) => (
             <div key={unit.id} className="grid gap-4 rounded-[24px] border border-[#eadccf] bg-white p-4 shadow-[0_18px_50px_rgba(71,45,24,0.06)] lg:grid-cols-[120px_1fr_auto] lg:items-center">
               <div className="relative aspect-[4/3] h-24 overflow-hidden rounded-2xl bg-[#f6efe8]">
-                <Image alt={unit.name} fill src={unit.image} className="object-cover" />
+                <Image alt={unit.name} fill src={resolvePublicImage(unit.image, propertyImages.roomDouble)} className="object-cover" />
               </div>
               <div>
                 <div className="flex flex-wrap items-center gap-3">
@@ -1118,7 +1120,12 @@ export function UnitsSection() {
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 {editing.images.map((image) => (
                   <div key={image.id} className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-[#eadccf]">
-                    <Image alt={image.altText || editing.name} fill src={image.url} className="object-cover" />
+                    <Image
+                      alt={image.altText || editing.name}
+                      fill
+                      src={resolvePublicImage(image.url, propertyImages.gallery)}
+                      className="object-cover"
+                    />
                   </div>
                 ))}
               </div>
@@ -1483,7 +1490,7 @@ export function ContentSection() {
           </SectionCard>
           <SectionCard title="Imagen de portada">
             <div className="relative aspect-[1.3] overflow-hidden rounded-[24px]">
-              <Image alt="Hero" fill src={content.heroImage} className="object-cover" />
+              <Image alt="Hero" fill src={resolvePublicImage(content.heroImage, propertyImages.hero)} className="object-cover" />
             </div>
           </SectionCard>
         </div>
@@ -1645,7 +1652,7 @@ export function GallerySection() {
           {visibleItems.map((item) => (
             <div key={item.id} className="overflow-hidden rounded-[24px] border border-[#eadccf] bg-white shadow-[0_18px_50px_rgba(71,45,24,0.06)]">
               <div className="relative aspect-[1.06]">
-                <Image alt={item.title} fill src={item.image} className="object-cover" />
+                <Image alt={item.title} fill src={resolvePublicImage(item.image, propertyImages.gallery)} className="object-cover" />
               </div>
               <div className="p-4">
                 <div className="flex items-center justify-between gap-3">
@@ -1722,7 +1729,7 @@ export function GallerySection() {
           </Field>
           {editing ? (
             <div className="relative aspect-[4/3] overflow-hidden rounded-2xl border border-[#eadccf]">
-              <Image alt={editing.title} fill src={editing.image} className="object-cover" />
+              <Image alt={editing.title} fill src={resolvePublicImage(editing.image, propertyImages.gallery)} className="object-cover" />
             </div>
           ) : null}
           <div className="flex justify-end">

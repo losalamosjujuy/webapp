@@ -41,6 +41,7 @@ import {
   type PublicInfoModalId
 } from "@/lib/public-site";
 import { formatCurrency } from "@/lib/utils/format";
+import { resolvePublicImage } from "@/lib/utils/images";
 import { inquirySchema, reservationRequestSchema } from "@/lib/validations/reservation";
 import type { GalleryItem, Inquiry, LandingContent, SiteSettings, Unit } from "@/types/domain";
 
@@ -137,19 +138,23 @@ export function PublicHomePage({
 }) {
   const whatsappMessages = useMemo(() => buildWhatsAppMessages(siteSettings, units), [siteSettings, units]);
   const featuredUnits = units.slice(0, 3);
-  const heroImage =
-    landingContent.hero.imageUrl ??
-    units[0]?.featuredImage ??
-    propertyImages.hero;
-  const secondaryHeroImage = units[1]?.featuredImage ?? units[0]?.images[0]?.imageUrl ?? heroImage;
+  const heroImage = resolvePublicImage(landingContent.hero.imageUrl ?? units[0]?.featuredImage, propertyImages.hero);
+  const secondaryHeroImage = resolvePublicImage(
+    units[1]?.featuredImage ?? units[0]?.images[0]?.imageUrl,
+    heroImage
+  );
   const galleryImages = useMemo(
     () =>
       gallery.length
-        ? gallery.map((item) => ({ id: item.id, src: item.imageUrl, alt: item.title }))
+        ? gallery.map((item) => ({
+            id: item.id,
+            src: resolvePublicImage(item.imageUrl, propertyImages.gallery),
+            alt: item.title
+          }))
         : units.flatMap((unit) =>
             unit.images.map((image) => ({
               id: image.id,
-              src: image.imageUrl,
+              src: resolvePublicImage(image.imageUrl, unit.featuredImage || propertyImages.gallery),
               alt: image.altText || unit.name
             }))
           ),
@@ -420,7 +425,12 @@ export function PublicHomePage({
                         >
                           <div className="flex items-center gap-4">
                             <div className="relative h-[92px] w-[120px] overflow-hidden rounded-[14px] border border-[#eadfd3] bg-[#f2ebe3]">
-                              <Image alt={unit.name} fill src={unit.featuredImage} className="object-cover" />
+                              <Image
+                                alt={unit.name}
+                                fill
+                                src={resolvePublicImage(unit.featuredImage, propertyImages.roomDouble)}
+                                className="object-cover"
+                              />
                             </div>
                             <div>
                               <p className="text-lg font-semibold text-[#2a2019]">{unit.name}</p>
@@ -533,7 +543,12 @@ export function PublicHomePage({
                     >
                       <div className="flex items-center gap-4">
                         <div className="relative h-[92px] w-[120px] overflow-hidden rounded-[14px] border border-[#eadfd3] bg-[#f2ebe3]">
-                          <Image alt={unit.name} fill src={unit.featuredImage} className="object-cover" />
+                          <Image
+                            alt={unit.name}
+                            fill
+                            src={resolvePublicImage(unit.featuredImage, propertyImages.roomDouble)}
+                            className="object-cover"
+                          />
                         </div>
                         <div>
                           <p className="text-lg font-semibold text-[#2a2019]">{unit.name}</p>
@@ -594,7 +609,12 @@ export function PublicHomePage({
           {featuredUnits.map((unit) => (
             <article key={unit.id} className="overflow-hidden rounded-[22px] border border-[#eadfd2] bg-white shadow-[0_12px_40px_rgba(91,69,42,0.07)]">
               <div className="relative aspect-[1.12]">
-                <Image alt={unit.name} fill src={unit.featuredImage} className="object-cover" />
+                <Image
+                  alt={unit.name}
+                  fill
+                  src={resolvePublicImage(unit.featuredImage, propertyImages.roomDouble)}
+                  className="object-cover"
+                />
               </div>
               <div className="px-5 pb-6 pt-4">
                 <h3 className="font-display text-[35px] leading-none tracking-[-0.05em] text-[#2b2118]">{unit.name}</h3>

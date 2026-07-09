@@ -9,8 +9,6 @@ export async function sendReservationOtpEmail(params: {
   checkOut: string;
   expiresInMinutes: number;
 }) {
-  const deliveryRecipient = resolveOtpRecipient(params.to);
-  const usingRedirectRecipient = deliveryRecipient !== params.to;
   const subject = "Tu código para continuar la reserva";
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;color:#2d221a;line-height:1.5">
@@ -20,13 +18,6 @@ export async function sendReservationOtpEmail(params: {
       <p>Tu código para continuar la reserva es:</p>
       <p style="font-size:32px;font-weight:700;letter-spacing:6px;margin:16px 0;">${escapeHtml(params.code)}</p>
       <p>El código vence en ${params.expiresInMinutes} minutos.</p>
-      ${
-        usingRedirectRecipient
-          ? `<p style="margin-top:18px;padding:12px 14px;background:#f7efe4;border-radius:12px;">
-              Modo prueba activo. El destinatario original era <strong>${escapeHtml(params.to)}</strong>.
-            </p>`
-          : ""
-      }
       <p>Si no pediste este código, podés ignorar este mensaje.</p>
     </div>
   `;
@@ -37,8 +28,7 @@ export async function sendReservationOtpEmail(params: {
     }
 
     console.info("[reservation-otp]", {
-      to: deliveryRecipient,
-      originalTo: params.to,
+      to: params.to,
       subject,
       code: params.code,
       unitName: params.unitName,
@@ -56,7 +46,7 @@ export async function sendReservationOtpEmail(params: {
     },
     body: JSON.stringify({
       from: env.RESERVATION_OTP_FROM_EMAIL,
-      to: [deliveryRecipient],
+      to: [params.to],
       reply_to: env.RESERVATION_OTP_REPLY_TO_EMAIL || undefined,
       subject,
       html
@@ -67,14 +57,6 @@ export async function sendReservationOtpEmail(params: {
     const message = await response.text().catch(() => "");
     throw new Error(`No se pudo enviar el código de verificación.${message ? ` ${message}` : ""}`);
   }
-}
-
-function resolveOtpRecipient(originalRecipient: string) {
-  if (process.env.NODE_ENV !== "production" && env.RESERVATION_OTP_TEST_RECIPIENT_EMAIL) {
-    return env.RESERVATION_OTP_TEST_RECIPIENT_EMAIL;
-  }
-
-  return originalRecipient;
 }
 
 function escapeHtml(value: string) {
