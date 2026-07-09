@@ -47,6 +47,11 @@ export const reservationOtpResendSchema = z.object({
   requestId: z.string().uuid()
 });
 
+export const reservationLookupSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  reservationCode: z.string().trim().min(1, "Ingresa tu c\u00f3digo de reserva.")
+});
+
 export const inquirySchema = z.object({
   fullName: z.string().min(3),
   phone: z.string().min(8),

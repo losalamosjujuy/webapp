@@ -127,6 +127,20 @@ export interface Payment {
   updatedAt: string;
 }
 
+export interface PublicReservationLookup {
+  reservationCode: string;
+  status: ReservationStatus;
+  paymentStatus?: PaymentStatus;
+  checkoutUrl?: string;
+  unitName: string;
+  checkIn: string;
+  checkOut: string;
+  adults: number;
+  children: number;
+  totalAmount: number;
+  currency: string;
+}
+
 export interface AvailabilityBlock {
   id: string;
   unitId: string;

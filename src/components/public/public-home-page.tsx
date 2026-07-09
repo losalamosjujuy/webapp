@@ -13,6 +13,7 @@ import {
   CircleArrowUp,
   CookingPot,
   Facebook,
+  FileSearch,
   HeartHandshake,
   Instagram,
   Mail,
@@ -41,10 +42,21 @@ import {
   type PublicInfoModalId
 } from "@/lib/public-site";
 import { buildPricingPreview } from "@/lib/pricing/pricing";
-import { formatCurrency } from "@/lib/utils/format";
+import { formatCurrency, formatDate } from "@/lib/utils/format";
 import { resolvePublicImage } from "@/lib/utils/images";
-import { inquirySchema, reservationRequestSchema } from "@/lib/validations/reservation";
-import type { GalleryItem, Inquiry, LandingContent, SiteSettings, Unit } from "@/types/domain";
+import {
+  inquirySchema,
+  reservationLookupSchema,
+  reservationRequestSchema
+} from "@/lib/validations/reservation";
+import type {
+  GalleryItem,
+  Inquiry,
+  LandingContent,
+  PublicReservationLookup,
+  SiteSettings,
+  Unit
+} from "@/types/domain";
 
 const SERVICE_ICONS = [Wifi, UtensilsCrossed, Mountain, Car, CookingPot, Trees, HeartHandshake];
 const SERVICE_LABELS = [
@@ -101,6 +113,28 @@ type BookingPrefill = Partial<ReservationFormValues> & {
 
 type ReservationFormValues = z.infer<typeof reservationRequestSchema>;
 type InquiryFormValues = z.infer<typeof inquirySchema>;
+type ReservationLookupFormValues = z.infer<typeof reservationLookupSchema>;
+
+const RESERVATION_STATUS_LABELS: Partial<Record<PublicReservationLookup["status"], string>> = {
+  pending_verification: "Verificaci\u00f3n pendiente",
+  verified_pending_payment: "Pago pendiente",
+  pending_payment: "Pago pendiente",
+  confirmed: "Confirmada",
+  canceled: "Cancelada",
+  completed: "Completada"
+};
+
+const PAYMENT_STATUS_LABELS: Partial<Record<NonNullable<PublicReservationLookup["paymentStatus"]>, string>> = {
+  pending: "Pendiente",
+  authorized: "Autorizado",
+  in_process: "En proceso",
+  approved: "Aprobado",
+  rejected: "Rechazado",
+  cancelled: "Cancelado",
+  refunded: "Reintegrado",
+  charged_back: "Desconocido",
+  expired: "Vencido"
+};
 
 function useModalBehavior(open: boolean, onClose: () => void) {
   useEffect(() => {
@@ -124,6 +158,18 @@ function useModalBehavior(open: boolean, onClose: () => void) {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [open, onClose]);
+}
+
+function getReservationStatusLabel(status: PublicReservationLookup["status"]) {
+  return RESERVATION_STATUS_LABELS[status] ?? status;
+}
+
+function getPaymentStatusLabel(status?: PublicReservationLookup["paymentStatus"]) {
+  if (!status) {
+    return null;
+  }
+
+  return PAYMENT_STATUS_LABELS[status] ?? status;
 }
 
 export function PublicHomePage({
@@ -167,12 +213,15 @@ export function PublicHomePage({
         author: item.guestName
       }))
     : FALLBACK_TESTIMONIALS;
+  const reservationLookupWhatsappMessage =
+    "Hola, necesito ayuda para consultar el estado de mi reserva.";
 
   const [activeInfoModal, setActiveInfoModal] = useState<PublicInfoModalId | null>(null);
   const [bookingModalUnitId, setBookingModalUnitId] = useState<string | undefined>();
   const [bookingModalPrefill, setBookingModalPrefill] = useState<BookingPrefill>({});
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [inquiryModalOpen, setInquiryModalOpen] = useState(false);
+  const [reservationLookupModalOpen, setReservationLookupModalOpen] = useState(false);
   const [availabilityResults, setAvailabilityResults] = useState<AvailabilityResult | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
@@ -356,6 +405,14 @@ export function PublicHomePage({
                     <MessageCircle className="mr-3 h-4 w-4" />
                     Escribir por WhatsApp
                   </a>
+                  <button
+                    onClick={() => setReservationLookupModalOpen(true)}
+                    className="inline-flex h-[54px] items-center justify-center rounded-[20px] border border-white/35 bg-white/[0.04] px-6 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white sm:h-[58px] sm:rounded-[24px] sm:px-8 sm:text-[13px]"
+                    type="button"
+                  >
+                    <FileSearch className="mr-3 h-4 w-4" />
+                    Consultar mi reserva
+                  </button>
                 </div>
               </div>
             </div>
@@ -804,6 +861,14 @@ export function PublicHomePage({
               <MessageCircle className="mr-3 h-4 w-4" />
               Escribir por WhatsApp
             </a>
+            <button
+              onClick={() => setReservationLookupModalOpen(true)}
+              className="inline-flex h-[54px] items-center justify-center rounded-[10px] border border-white/30 px-7 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white"
+              type="button"
+            >
+              <FileSearch className="mr-3 h-4 w-4" />
+              Consultar mi reserva
+            </button>
           </div>
         </div>
       </section>
@@ -913,6 +978,14 @@ export function PublicHomePage({
         onClose={() => setBookingModalOpen(false)}
         open={bookingModalOpen}
         units={units}
+      />
+      <PublicReservationLookupModal
+        onClose={() => setReservationLookupModalOpen(false)}
+        open={reservationLookupModalOpen}
+        supportUrl={buildWhatsAppUrl({
+          number: siteSettings.whatsappNumber,
+          message: reservationLookupWhatsappMessage
+        })}
       />
       <PublicInquiryModal onClose={() => setInquiryModalOpen(false)} open={inquiryModalOpen} />
       <PublicInfoModal content={landingContent} modalId={activeInfoModal} onClose={() => setActiveInfoModal(null)} />
@@ -1395,6 +1468,203 @@ function PublicBookingModal({
               {"No pudimos iniciar el checkout. Volvé a intentarlo."}
             </p>
           )}
+        </div>
+      ) : null}
+    </ModalFrame>
+  );
+}
+
+function PublicReservationLookupModal({
+  onClose,
+  open,
+  supportUrl
+}: {
+  onClose: () => void;
+  open: boolean;
+  supportUrl: string;
+}) {
+  const [reservation, setReservation] = useState<PublicReservationLookup | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const form = useForm<ReservationLookupFormValues>({
+    resolver: zodResolver(reservationLookupSchema),
+    defaultValues: {
+      email: "",
+      reservationCode: ""
+    }
+  });
+
+  useEffect(() => {
+    form.reset({
+      email: "",
+      reservationCode: ""
+    });
+    setReservation(null);
+    setRequestError(null);
+    setNotFound(false);
+  }, [form, open]);
+
+  async function onSubmit(values: ReservationLookupFormValues) {
+    setReservation(null);
+    setRequestError(null);
+    setNotFound(false);
+
+    try {
+      const response = await fetch("/api/reservations/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(values)
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | { reservation?: PublicReservationLookup; error?: string }
+        | null;
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          setNotFound(true);
+          return;
+        }
+
+        throw new Error(payload?.error ?? "No pudimos consultar la reserva. Intentalo nuevamente");
+      }
+
+      if (!payload?.reservation) {
+        throw new Error("No pudimos consultar la reserva. Intentalo nuevamente");
+      }
+
+      setReservation(payload.reservation);
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "No pudimos consultar la reserva. Intentalo nuevamente"
+      );
+    }
+  }
+
+  const paymentStatusLabel = getPaymentStatusLabel(reservation?.paymentStatus);
+  const canContinuePayment =
+    reservation?.checkoutUrl &&
+    (reservation.status === "pending_payment" || reservation.status === "verified_pending_payment");
+
+  return (
+    <ModalFrame onClose={onClose} open={open} title="Consultar mi reserva">
+      <p className="mb-5 text-[16px] leading-8 text-[var(--color-ink-2)]">
+        Ingres\u00e1 el email con el que hiciste la reserva y tu c\u00f3digo.
+      </p>
+      <form className="grid gap-4" onSubmit={form.handleSubmit(onSubmit)}>
+        <label className="text-sm text-[var(--color-ink-2)]">
+          Email
+          <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" type="email" {...form.register("email")} />
+          {form.formState.errors.email ? (
+            <span className="mt-2 block text-sm text-[var(--color-danger)]">
+              {form.formState.errors.email.message}
+            </span>
+          ) : null}
+        </label>
+        <label className="text-sm text-[var(--color-ink-2)]">
+          C\u00f3digo de reserva
+          <Input
+            className="mt-2 rounded-[16px] border-[var(--color-rule)]"
+            placeholder="Ej: LAT-240701"
+            {...form.register("reservationCode")}
+          />
+          {form.formState.errors.reservationCode ? (
+            <span className="mt-2 block text-sm text-[var(--color-danger)]">
+              {form.formState.errors.reservationCode.message}
+            </span>
+          ) : null}
+        </label>
+        {requestError ? <p className="text-sm text-[var(--color-danger)]">{requestError}</p> : null}
+        <div className="flex justify-end">
+          <Button className="rounded-[16px] px-6" type="submit" variant="secondary">
+            {form.formState.isSubmitting ? "Consultando..." : "Buscar reserva"}
+          </Button>
+        </div>
+      </form>
+
+      {reservation ? (
+        <div className="mt-6 space-y-4">
+          <div className="rounded-[20px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-5">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  C\u00f3digo de reserva
+                </p>
+                <p className="mt-2 text-base font-semibold text-[var(--color-ink)]">
+                  {reservation.reservationCode}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  Alojamiento
+                </p>
+                <p className="mt-2 text-base font-semibold text-[var(--color-ink)]">{reservation.unitName}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  Fechas
+                </p>
+                <p className="mt-2 text-sm text-[var(--color-ink)]">
+                  {formatDate(reservation.checkIn)} al {formatDate(reservation.checkOut)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  Hu\u00e9spedes
+                </p>
+                <p className="mt-2 text-sm text-[var(--color-ink)]">
+                  {reservation.adults} adultos
+                  {reservation.children > 0 ? `, ${reservation.children} ni\u00f1os` : ""}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  Estado de reserva
+                </p>
+                <p className="mt-2 text-sm font-semibold text-[var(--color-ink)]">
+                  {getReservationStatusLabel(reservation.status)}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                  Estado de pago
+                </p>
+                <p className="mt-2 text-sm font-semibold text-[var(--color-ink)]">
+                  {paymentStatusLabel ?? "Sin informaci\u00f3n de pago"}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 border-t border-[var(--color-rule)] pt-4">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
+                Total
+              </p>
+              <p className="mt-2 text-lg font-semibold text-[var(--color-ink)]">
+                {formatCurrency(reservation.totalAmount, reservation.currency)}
+              </p>
+            </div>
+          </div>
+          {canContinuePayment ? (
+            <a className="hallmark-button-secondary inline-flex" href={reservation.checkoutUrl} rel="noreferrer" target="_blank">
+              Continuar pago
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+
+      {notFound ? (
+        <div className="mt-6 rounded-[20px] border border-[var(--color-rule)] bg-[oklch(0.99_0.01_80)] p-5">
+          <p className="text-sm text-[var(--color-ink-2)]">No encontramos una reserva con esos datos.</p>
+          <a
+            className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--color-accent-strong)]"
+            href={supportUrl}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <MessageCircle className="h-4 w-4" />
+            Pedir ayuda por WhatsApp
+          </a>
         </div>
       ) : null}
     </ModalFrame>

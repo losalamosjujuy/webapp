@@ -37,6 +37,7 @@ import type {
   LandingContent,
   Payment,
   RatePlan,
+  PublicReservationLookup,
   ReservationHoldStatus,
   ReservationRequestStatus,
   Reservation,
@@ -100,6 +101,26 @@ type ReservationHoldRecord = {
   createdAt: string;
   updatedAt: string;
 };
+
+type PublicReservationLookupRow = {
+  id: string;
+  reservation_code: string;
+  status: Reservation["status"];
+  check_in: string;
+  check_out: string;
+  adults: number;
+  children: number;
+  total_amount: number;
+  currency: string;
+  guests: Array<{
+    email: string;
+  }> | null;
+  units: Array<{
+    name: string;
+  }> | null;
+};
+
+const PUBLIC_RESERVATION_LOOKUP_ERROR = "No encontramos una reserva con esos datos.";
 
 const mockReservationRuntime = globalThis as typeof globalThis & {
   __mockReservationRequests?: ReservationRequestRecord[];
@@ -262,6 +283,25 @@ function mapPayment(row: any): Payment {
     rawPayload: row.raw_payload ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function mapPublicReservationLookup(
+  row: PublicReservationLookupRow,
+  payment?: Pick<Payment, "status" | "checkoutUrl"> | null
+): PublicReservationLookup {
+  return {
+    reservationCode: row.reservation_code,
+    status: row.status,
+    paymentStatus: payment?.status,
+    checkoutUrl: payment?.checkoutUrl,
+    unitName: row.units?.[0]?.name ?? "Alojamiento",
+    checkIn: row.check_in,
+    checkOut: row.check_out,
+    adults: row.adults,
+    children: row.children,
+    totalAmount: Number(row.total_amount),
+    currency: row.currency
   };
 }
 
@@ -2071,6 +2111,97 @@ export async function createInquiry(payload: {
   }
 
   return mapInquiry(data);
+}
+
+export async function lookupPublicReservation(payload: {
+  email: string;
+  reservationCode: string;
+}): Promise<PublicReservationLookup> {
+  const normalizedEmail = payload.email.trim().toLowerCase();
+  const normalizedCode = payload.reservationCode.trim().toLowerCase();
+
+  if (canUseMockData()) {
+    const reservation = mockReservations.find(
+      (item) =>
+        item.reservationCode.trim().toLowerCase() === normalizedCode &&
+        item.guest.email.trim().toLowerCase() === normalizedEmail
+    );
+
+    if (!reservation) {
+      throw new Error(PUBLIC_RESERVATION_LOOKUP_ERROR);
+    }
+
+    return {
+      reservationCode: reservation.reservationCode,
+      status: reservation.status,
+      unitName: reservation.unit.name,
+      checkIn: reservation.checkIn,
+      checkOut: reservation.checkOut,
+      adults: reservation.adults,
+      children: reservation.children,
+      totalAmount: reservation.totalAmount,
+      currency: reservation.currency
+    };
+  }
+
+  const supabase = createSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from("reservations")
+    .select(`
+      id,
+      reservation_code,
+      status,
+      check_in,
+      check_out,
+      adults,
+      children,
+      total_amount,
+      currency,
+      guests (
+        email
+      ),
+      units (
+        name
+      )
+    `)
+    .ilike("reservation_code", payload.reservationCode.trim())
+    .limit(2);
+
+  if (error) {
+    throw error;
+  }
+
+  const reservationRow = ((data ?? []) as PublicReservationLookupRow[]).find(
+    (item) =>
+      item.reservation_code.trim().toLowerCase() === normalizedCode &&
+      item.guests?.[0]?.email?.trim().toLowerCase() === normalizedEmail
+  );
+
+  if (!reservationRow) {
+    throw new Error(PUBLIC_RESERVATION_LOOKUP_ERROR);
+  }
+
+  const { data: paymentRow, error: paymentError } = await supabase
+    .from("payments")
+    .select("status, checkout_url")
+    .eq("reservation_id", reservationRow.id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (paymentError) {
+    throw paymentError;
+  }
+
+  return mapPublicReservationLookup(
+    reservationRow,
+    paymentRow
+      ? {
+          status: paymentRow.status,
+          checkoutUrl: paymentRow.checkout_url ?? undefined
+        }
+      : null
+  );
 }
 
 export async function getAdminState(): Promise<AdminState> {
