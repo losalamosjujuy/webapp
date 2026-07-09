@@ -1,0 +1,47 @@
+/* Hallmark · macrostructure: Split Narrative Ledger · tone: warm editorial retreat · anchor hue: canyon clay */
+:root {
+  --color-paper: oklch(0.96 0.018 72);
+  --color-paper-2: oklch(0.92 0.025 68);
+  --color-paper-3: oklch(0.88 0.028 62);
+  --color-ink: oklch(0.24 0.03 48);
+  --color-ink-2: oklch(0.38 0.025 50);
+  --color-rule: oklch(0.82 0.024 63);
+  --color-accent: oklch(0.58 0.11 45);
+  --color-accent-strong: oklch(0.44 0.09 44);
+  --color-accent-soft: oklch(0.84 0.05 58);
+  --color-focus: oklch(0.66 0.11 50);
+  --color-forest: oklch(0.52 0.05 145);
+  --color-overlay: oklch(0.22 0.025 42 / 0.68);
+  --color-success: oklch(0.62 0.12 145);
+  --color-danger: oklch(0.58 0.18 28);
+
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 6rem;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: clamp(2.4rem, 4vw, 4.4rem);
+  --text-display: clamp(4rem, 9vw, 7rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.67, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-short: 180ms;
+  --dur-mid: 280ms;
+
+  --radius-card: 1.5rem;
+  --radius-panel: 2rem;
+  --radius-pill: 999px;
+  --radius-input: 1rem;
+}
