@@ -299,7 +299,16 @@ function mapAdultPriceRate(row: any): AdultPriceRate {
 function mapUnit(row: any): Unit {
   const images = (row.unit_images ?? [])
     .map(mapUnitImage)
-    .sort((a: UnitImage, b: UnitImage) => a.sortOrder - b.sortOrder);
+    .sort((a: UnitImage, b: UnitImage) => {
+      const leftHasStorage = Boolean(a.storagePath);
+      const rightHasStorage = Boolean(b.storagePath);
+
+      if (leftHasStorage !== rightHasStorage) {
+        return leftHasStorage ? -1 : 1;
+      }
+
+      return a.sortOrder - b.sortOrder;
+    });
   const amenities = (row.unit_amenities ?? [])
     .map((item: any) => item.amenities)
     .filter(Boolean)
@@ -3717,7 +3726,7 @@ export async function upsertUnit(payload: {
   if (payload.uploads?.length) {
     const { data: currentImages, error: currentImagesError } = await supabase
       .from("unit_images")
-      .select("id")
+      .select("id, sort_order")
       .eq("unit_id", unitResult.data.id)
       .order("sort_order", { ascending: true });
 
@@ -3725,19 +3734,36 @@ export async function upsertUnit(payload: {
       throw currentImagesError;
     }
 
-    const startOrder = currentImages?.length ?? 0;
+    const currentImageRows = currentImages ?? [];
+    const hasExistingStorageImages = currentImageRows.length > 0;
     const imageRows = payload.uploads.map((upload, index) => ({
       unit_id: unitResult.data.id,
       image_url: upload.url,
       storage_path: upload.path,
       alt_text: payload.name,
-      sort_order: startOrder + index + 1
+      sort_order: index + 1
     }));
 
     const { error: imageError } = await supabase.from("unit_images").insert(imageRows);
 
     if (imageError) {
       throw imageError;
+    }
+
+    if (hasExistingStorageImages) {
+      for (const [index, image] of currentImageRows.entries()) {
+        const { error: reorderError } = await supabase
+          .from("unit_images")
+          .update({
+            sort_order: payload.uploads.length + index + 1
+          })
+          .eq("id", image.id)
+          .eq("unit_id", unitResult.data.id);
+
+        if (reorderError) {
+          throw reorderError;
+        }
+      }
     }
   }
 
