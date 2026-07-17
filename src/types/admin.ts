@@ -33,6 +33,18 @@ export interface AdminManagedImage {
   storagePath?: string;
 }
 
+export interface AdminUnitDetailItem {
+  label: string;
+  value: string;
+}
+
+export interface AdminAdultPriceRate {
+  id: string;
+  adults: number;
+  pricePerNight: number;
+  active: boolean;
+}
+
 export interface AdminReservation {
   id: string;
   guestName: string;
@@ -74,12 +86,21 @@ export interface AdminUnit {
   id: string;
   name: string;
   capacity: number;
+  bedrooms: number;
   beds: string;
+  bathrooms: number;
   price: number;
+  fromPricePerNight: number;
+  cleaningFee: number;
   image: string;
   images: AdminManagedImage[];
   status: AdminUnitStatus;
+  shortDescription: string;
   description: string;
+  amenities: string[];
+  highlights: string[];
+  details: AdminUnitDetailItem[];
+  adultPriceRates: AdminAdultPriceRate[];
 }
 
 export interface AdminAvailabilityBlock {
@@ -156,9 +177,11 @@ export interface AdminPolicyItem {
 }
 
 export interface AdminSiteContent {
+  heroEyebrow: string;
   heroTitle: string;
   heroSubtitle: string;
   heroImage: string;
+  heroTrustPoints: string[];
   aboutTitle: string;
   aboutBody: string;
   testimonialsTitle: string;
@@ -170,13 +193,21 @@ export interface AdminSiteContent {
 
 export interface AdminSettings {
   propertyName: string;
+  whatsappNumber: string;
   contactEmail: string;
   phone: string;
+  instagramUrl: string;
+  facebookUrl: string;
+  googleReviewsUrl: string;
+  googleMapsUrl: string;
   currency: string;
   timezone: string;
   checkInTime: string;
   checkOutTime: string;
+  depositPercentage: number;
   address: string;
+  city: string;
+  region: string;
 }
 
 export interface AdminState {

@@ -1,12 +1,12 @@
 import Link from "next/link";
 import { MessageCircle } from "lucide-react";
 
-import { siteSettings } from "@/data/mock-data";
 import { buildGeneralInquiryMessage, buildWhatsappLink } from "@/lib/whatsapp/messages";
+import type { SiteSettings } from "@/types/domain";
 
 import { Container } from "./container";
 
-export function SiteHeader() {
+export function SiteHeader({ siteSettings }: { siteSettings: SiteSettings }) {
   return (
     <header className="sticky top-0 z-20 border-b border-white/10 bg-night/90 backdrop-blur">
       <Container className="flex h-20 items-center justify-between">

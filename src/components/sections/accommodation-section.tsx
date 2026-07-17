@@ -34,9 +34,10 @@ export function AccommodationSection({ units }: { units: Unit[] }) {
                   <div>
                     <h3 className="font-display text-2xl text-night">{unit.name}</h3>
                     <p className="mt-2 text-sm leading-6 text-sand-700">{unit.shortDescription}</p>
+                    <p className="mt-2 text-xs text-sand-600">Precio segun cantidad de adultos.</p>
                   </div>
                   <span className="rounded-full bg-sand-100 px-3 py-1 text-xs font-semibold text-clay">
-                    Desde {formatCurrency(unit.basePricePerNight)}
+                    Desde {formatCurrency(unit.fromPricePerNight)}
                   </span>
                 </div>
                 <div className="mt-5 flex flex-wrap gap-4 text-sm text-sand-700">

@@ -6,7 +6,7 @@ import { getRequestIp } from "@/lib/reservations/http";
 import { assertRateLimit } from "@/lib/reservations/rate-limit";
 import { reservationLookupSchema } from "@/lib/validations/reservation";
 
-const NOT_FOUND_MESSAGE = "No encontramos una reserva con esos datos.";
+const NOT_FOUND_MESSAGE = "No pudimos validar una reserva con el codigo y el email ingresados.";
 const GENERIC_ERROR_MESSAGE = "No pudimos consultar la reserva. Intentalo nuevamente.";
 
 export async function POST(request: Request) {

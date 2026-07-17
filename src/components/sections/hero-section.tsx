@@ -2,10 +2,16 @@ import Link from "next/link";
 import { ArrowRight, CalendarDays } from "lucide-react";
 
 import { Container } from "@/components/layout/container";
-import { landingContent, siteSettings } from "@/data/mock-data";
 import { buildGeneralInquiryMessage, buildWhatsappLink } from "@/lib/whatsapp/messages";
+import type { LandingContent, SiteSettings } from "@/types/domain";
 
-export function HeroSection() {
+export function HeroSection({
+  landingContent,
+  siteSettings
+}: {
+  landingContent: LandingContent;
+  siteSettings: SiteSettings;
+}) {
   return (
     <section className="bg-plateau pb-20 pt-20 text-white">
       <Container className="grid gap-12 lg:grid-cols-[1.2fr_0.8fr] lg:items-end">
@@ -49,13 +55,13 @@ export function HeroSection() {
         </div>
         <div className="rounded-[2rem] border border-white/10 bg-white/10 p-6 backdrop-blur">
           <p className="text-sm font-semibold uppercase tracking-[0.2em] text-sand-200">
-            Desde Tilcara
+            {landingContent.hero.eyebrow || "Desde Tilcara"}
           </p>
           <p className="mt-4 font-display text-3xl">
-            {"Dise\u00F1o pensado para lanzar ahora y crecer despu\u00E9s."}
+            {landingContent.hero.title}
           </p>
           <p className="mt-4 text-base leading-7 text-sand-100">
-            {"El flujo centraliza consultas, muestra alojamientos, captura solicitudes y deja lista la operaci\u00F3n para administrar ocupaci\u00F3n, bloqueos y contenido desde el panel."}
+            {landingContent.hero.subtitle}
           </p>
         </div>
       </Container>

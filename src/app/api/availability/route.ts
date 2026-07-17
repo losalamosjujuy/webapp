@@ -14,7 +14,8 @@ export async function POST(request: Request) {
       name: unit.name,
       featuredImage: unit.featuredImage,
       shortDescription: unit.shortDescription,
-      basePricePerNight: unit.basePricePerNight,
+      basePricePerNight: unit.fromPricePerNight,
+      fromPricePerNight: unit.fromPricePerNight,
       maxGuests: unit.maxGuests
     }))
   });

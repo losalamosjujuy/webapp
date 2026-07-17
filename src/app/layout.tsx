@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Manrope } from "next/font/google";
 
+import { AppFeedbackProvider } from "@/components/feedback/app-feedback-provider";
 import { JsonLd } from "@/components/layout/json-ld";
 import { cn } from "@/lib/utils/cn";
 import { buildMetadata, lodgingJsonLd } from "@/lib/seo/metadata";
@@ -28,8 +29,10 @@ export default function RootLayout({
   return (
     <html lang="es">
       <body className={cn(displayFont.variable, bodyFont.variable)}>
-        <JsonLd data={lodgingJsonLd} />
-        {children}
+        <AppFeedbackProvider>
+          <JsonLd data={lodgingJsonLd} />
+          {children}
+        </AppFeedbackProvider>
       </body>
     </html>
   );

@@ -15,6 +15,7 @@ create table public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   email text not null unique,
   role public.app_role not null default 'admin',
+  status text not null default 'active' check (status in ('active', 'inactive')),
   full_name text,
   created_at timestamptz not null default now()
 );
@@ -43,9 +44,22 @@ create table public.units (
   bathrooms numeric(4, 1) not null default 1,
   base_price_per_night numeric(10, 2) not null check (base_price_per_night >= 0),
   cleaning_fee numeric(10, 2) not null default 0,
+  highlights_json jsonb not null default '[]'::jsonb,
+  details_json jsonb not null default '[]'::jsonb,
   active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table public.adult_price_rates (
+  id uuid primary key default gen_random_uuid(),
+  unit_id uuid not null references public.units (id) on delete cascade,
+  adults integer not null check (adults > 0),
+  price_per_night numeric(10, 2) not null check (price_per_night >= 0),
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (unit_id, adults)
 );
 
 create table public.amenities (
@@ -84,9 +98,13 @@ create table public.reservations (
   adults integer not null check (adults > 0),
   children integer not null default 0 check (children >= 0),
   nights integer not null check (nights > 0),
+  adults_price_rate_id uuid references public.adult_price_rates (id) on delete set null,
+  price_per_night numeric(10, 2) not null default 0 check (price_per_night >= 0),
   subtotal numeric(10, 2) not null default 0,
   cleaning_fee numeric(10, 2) not null default 0,
   total_amount numeric(10, 2) not null default 0,
+  deposit_percentage numeric(5, 2) not null default 10 check (deposit_percentage > 0 and deposit_percentage <= 100),
+  deposit_amount numeric(10, 2) not null default 0 check (deposit_amount >= 0),
   currency text not null default 'USD',
   special_requests text,
   estimated_arrival_time text,
@@ -331,9 +349,13 @@ create table public.reservation_requests (
   adults integer not null check (adults > 0),
   children integer not null default 0 check (children >= 0),
   nights integer not null check (nights > 0),
+  adults_price_rate_id uuid references public.adult_price_rates (id) on delete set null,
+  price_per_night numeric(10, 2) not null default 0 check (price_per_night >= 0),
   subtotal numeric(10, 2) not null default 0,
   cleaning_fee numeric(10, 2) not null default 0,
   total_amount numeric(10, 2) not null default 0,
+  deposit_percentage numeric(5, 2) not null default 10 check (deposit_percentage > 0 and deposit_percentage <= 100),
+  deposit_amount numeric(10, 2) not null default 0 check (deposit_amount >= 0),
   currency text not null default 'ARS',
   special_notes text,
   estimated_arrival_time text,
@@ -378,6 +400,7 @@ create table public.reservation_holds (
 create index reservations_date_idx on public.reservations (check_in, check_out);
 create index reservations_status_idx on public.reservations (status);
 create index reservations_guest_idx on public.reservations (guest_id, status);
+create index adult_price_rates_unit_idx on public.adult_price_rates (unit_id, active);
 create index rate_plans_unit_idx on public.rate_plans (unit_id, active);
 create unique index rate_plans_default_idx on public.rate_plans (unit_id) where is_default = true;
 create index inventory_lookup_idx on public.inventory (unit_id, date);
@@ -417,6 +440,10 @@ for each row execute function public.set_updated_at();
 
 create trigger units_set_updated_at
 before update on public.units
+for each row execute function public.set_updated_at();
+
+create trigger adult_price_rates_set_updated_at
+before update on public.adult_price_rates
 for each row execute function public.set_updated_at();
 
 create trigger reservations_set_updated_at
@@ -475,6 +502,7 @@ on conflict (id) do update set
 alter table public.profiles enable row level security;
 alter table public.guests enable row level security;
 alter table public.units enable row level security;
+alter table public.adult_price_rates enable row level security;
 alter table public.amenities enable row level security;
 alter table public.unit_amenities enable row level security;
 alter table public.unit_images enable row level security;
@@ -501,6 +529,10 @@ alter table public.channel_sync_logs enable row level security;
 
 create policy "public can read active catalog"
 on public.units for select
+using (active = true);
+
+create policy "public can read adult price rates"
+on public.adult_price_rates for select
 using (active = true);
 
 create policy "public can read amenities"
@@ -563,6 +595,11 @@ with check (auth.role() = 'authenticated');
 
 create policy "authenticated staff manage units"
 on public.units for all
+using (auth.role() = 'authenticated')
+with check (auth.role() = 'authenticated');
+
+create policy "authenticated staff manage adult price rates"
+on public.adult_price_rates for all
 using (auth.role() = 'authenticated')
 with check (auth.role() = 'authenticated');
 

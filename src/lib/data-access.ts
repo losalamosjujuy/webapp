@@ -1,15 +1,10 @@
 import {
-  availabilityBlocks as mockAvailabilityBlocks,
-  galleryItems as mockGalleryItems,
-  inquiries as mockInquiries,
-  landingContent as mockLandingContent,
-  reservations as mockReservations,
-  siteSettings as mockSiteSettings,
-  units as mockUnits
-} from "@/data/mock-data";
-import { sendReservationOtpEmail } from "@/lib/email/reservation-otp";
+  sendReservationAccessEmail,
+  sendReservationOtpEmail,
+  sendReservationStatusEmail
+} from "@/lib/email/reservation-otp";
 import { searchAvailableUnits } from "@/lib/availability/availability";
-import { buildPricingSnapshot } from "@/lib/pricing/pricing";
+import { buildPricingSnapshot, buildStayQuote, getFromPricePerNight } from "@/lib/pricing/pricing";
 import { createMercadoPagoPreference } from "@/lib/payments/mercadopago";
 import {
   addMinutes,
@@ -23,12 +18,13 @@ import {
   RESERVATION_HOLD_MINUTES,
   verifyOtpCode
 } from "@/lib/reservations/otp";
-import { canUseMockData, hasMercadoPagoEnv } from "@/lib/supabase/env";
-import { createSupabaseServiceClient } from "@/lib/supabase/server";
+import { canUseMockData, hasMercadoPagoEnv, hasSupabaseEnv } from "@/lib/supabase/env";
+import { createSupabaseServerClient, createSupabaseServiceClient } from "@/lib/supabase/server";
 import { removeStorageObjects } from "@/lib/supabase/storage";
 import { calculateNights } from "@/lib/utils/format";
-import type { AdminState } from "@/types/admin";
+import type { AdminInquiry, AdminState, AdminUser } from "@/types/admin";
 import type {
+  AdultPriceRate,
   Amenity,
   AvailabilityBlock,
   GalleryItem,
@@ -43,8 +39,41 @@ import type {
   Reservation,
   SiteSettings,
   Unit,
+  UnitDetailItem,
   UnitImage
 } from "@/types/domain";
+
+const EMPTY_SITE_SETTINGS: SiteSettings = {
+  whatsappNumber: "",
+  phone: "",
+  email: "",
+  instagramUrl: "",
+  facebookUrl: "",
+  googleReviewsUrl: "",
+  googleMapsUrl: "",
+  address: "",
+  city: "",
+  region: "",
+  depositPercentage: 10,
+  coordinates: {
+    lat: 0,
+    lng: 0
+  }
+};
+
+const EMPTY_LANDING_CONTENT: LandingContent = {
+  hero: {
+    eyebrow: "",
+    title: "",
+    subtitle: "",
+    trustPoints: [],
+    imageUrl: ""
+  },
+  about: "",
+  policies: [],
+  faqs: [],
+  testimonials: []
+};
 
 type ReservationRequestRecord = {
   id: string;
@@ -60,9 +89,13 @@ type ReservationRequestRecord = {
   adults: number;
   children: number;
   nights: number;
+  adultsPriceRateId?: string;
+  pricePerNight: number;
   subtotal: number;
   cleaningFee: number;
   totalAmount: number;
+  depositPercentage: number;
+  depositAmount: number;
   currency: string;
   specialNotes?: string;
   estimatedArrivalTime?: string;
@@ -120,7 +153,34 @@ type PublicReservationLookupRow = {
   }> | null;
 };
 
-const PUBLIC_RESERVATION_LOOKUP_ERROR = "No encontramos una reserva con esos datos.";
+type ReservationNotificationRow = {
+  reservation_code: string;
+  status: Reservation["status"];
+  check_in: string;
+  check_out: string;
+  guests:
+    | {
+        full_name: string;
+        email: string;
+      }
+    | Array<{
+        full_name: string;
+        email: string;
+      }>
+    | null;
+  units:
+    | {
+        name: string;
+      }
+    | Array<{
+        name: string;
+      }>
+    | null;
+};
+
+const PUBLIC_RESERVATION_LOOKUP_ERROR = "No pudimos validar una reserva con el codigo y el email ingresados.";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const mockReservationRuntime = globalThis as typeof globalThis & {
   __mockReservationRequests?: ReservationRequestRecord[];
@@ -135,6 +195,75 @@ const mockReservationHolds = mockReservationRuntime.__mockReservationHolds ?? []
 mockReservationRuntime.__mockReservationRequests = mockReservationRequests;
 mockReservationRuntime.__mockContactVerifications = mockContactVerifications;
 mockReservationRuntime.__mockReservationHolds = mockReservationHolds;
+
+function throwSupabaseDataError(scope: string, error: unknown): never {
+  const message = extractSupabaseErrorMessage(error);
+
+  if (
+    scope === "units" &&
+    (message.includes("highlights_json") || message.includes("details_json") || message.includes("42703"))
+  ) {
+    throw new Error(
+      "Falta actualizar la tabla de unidades en Supabase. Corre la migracion supabase/migrations/008_units_rich_content.sql y vuelve a probar."
+    );
+  }
+
+  throw new Error(`No pudimos cargar ${scope} desde Supabase.${message ? ` ${message}` : ""}`);
+}
+
+function extractSupabaseErrorMessage(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return "";
+  }
+
+  const candidate = error as {
+    message?: unknown;
+    details?: unknown;
+    hint?: unknown;
+    code?: unknown;
+  };
+
+  return [candidate.message, candidate.details, candidate.hint, candidate.code]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" | ");
+}
+
+function parseSupabaseNumber(value: unknown, fallback = 0) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    const normalized =
+      trimmed.includes(",") && trimmed.includes(".")
+        ? trimmed.replace(/,/g, "")
+        : trimmed.replace(",", ".");
+    const parsed = Number(normalized);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return fallback;
+}
+
+function isMissingAdultPriceRatesTable(error: unknown) {
+  const message = extractSupabaseErrorMessage(error);
+  return message.includes("adult_price_rates") && (message.includes("PGRST205") || message.includes("42P01"));
+}
+
+function isMissingProfilesStatusColumn(error: unknown) {
+  const message = extractSupabaseErrorMessage(error);
+  return message.includes("profiles") && message.includes("status") && (message.includes("42703") || message.includes("PGRST204"));
+}
+
+function assertRealDataMode(scope: string) {
+  if (canUseMockData()) {
+    throw new Error(`Supabase real no esta disponible para ${scope}. Configura las credenciales reales antes de continuar.`);
+  }
+}
 
 function mapUnitImage(row: any): UnitImage {
   return {
@@ -155,6 +284,18 @@ function mapAmenity(row: any): Amenity {
   };
 }
 
+function mapAdultPriceRate(row: any): AdultPriceRate {
+  return {
+    id: row.id,
+    unitId: row.unit_id,
+    adults: row.adults,
+    pricePerNight: parseSupabaseNumber(row.price_per_night ?? row.pricePerNight),
+    active: row.active,
+    createdAt: row.created_at ?? undefined,
+    updatedAt: row.updated_at ?? undefined
+  };
+}
+
 function mapUnit(row: any): Unit {
   const images = (row.unit_images ?? [])
     .map(mapUnitImage)
@@ -163,6 +304,10 @@ function mapUnit(row: any): Unit {
     .map((item: any) => item.amenities)
     .filter(Boolean)
     .map(mapAmenity);
+  const adultPriceRates = (row.adult_price_rates ?? [])
+    .map(mapAdultPriceRate)
+    .sort((a: AdultPriceRate, b: AdultPriceRate) => a.adults - b.adults);
+  const basePricePerNight = parseSupabaseNumber(row.base_price_per_night ?? row.basePricePerNight);
 
   return {
     id: row.id,
@@ -173,14 +318,56 @@ function mapUnit(row: any): Unit {
     maxGuests: row.max_guests,
     bedrooms: row.bedrooms,
     beds: row.beds,
-    bathrooms: Number(row.bathrooms),
-    basePricePerNight: Number(row.base_price_per_night),
-    cleaningFee: Number(row.cleaning_fee),
+    bathrooms: parseSupabaseNumber(row.bathrooms),
+    basePricePerNight: basePricePerNight,
+    fromPricePerNight: getFromPricePerNight({
+      adultPriceRates,
+      basePricePerNight
+    }),
+    cleaningFee: parseSupabaseNumber(row.cleaning_fee ?? row.cleaningFee),
     active: row.active,
     featuredImage: images[0]?.imageUrl ?? "",
     amenities,
-    images
+    images,
+    adultPriceRates,
+    highlights: Array.isArray(row.highlights_json)
+      ? row.highlights_json.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
+      : [],
+    details: Array.isArray(row.details_json)
+      ? row.details_json
+          .filter(
+            (item: unknown): item is UnitDetailItem =>
+              Boolean(item) &&
+              typeof item === "object" &&
+              typeof (item as UnitDetailItem).label === "string" &&
+              typeof (item as UnitDetailItem).value === "string"
+          )
+          .map((item: UnitDetailItem) => ({
+            label: item.label.trim(),
+            value: item.value.trim()
+          }))
+          .filter((item: UnitDetailItem) => item.label && item.value)
+      : []
   };
+}
+
+function normalizeStringList(items: string[]) {
+  return Array.from(
+    new Set(
+      items
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function normalizeUnitDetails(items: UnitDetailItem[]) {
+  return items
+    .map((item) => ({
+      label: item.label.trim(),
+      value: item.value.trim()
+    }))
+    .filter((item) => item.label && item.value);
 }
 
 function mapReservation(row: any): Reservation {
@@ -208,9 +395,13 @@ function mapReservation(row: any): Reservation {
     adults: row.adults,
     children: row.children,
     nights: row.nights,
-    subtotal: Number(row.subtotal),
-    cleaningFee: Number(row.cleaning_fee),
-    totalAmount: Number(row.total_amount),
+    adultsPriceRateId: row.adults_price_rate_id ?? undefined,
+    pricePerNight: parseSupabaseNumber(row.price_per_night ?? row.pricePerNight),
+    subtotal: parseSupabaseNumber(row.subtotal),
+    cleaningFee: parseSupabaseNumber(row.cleaning_fee ?? row.cleaningFee),
+    totalAmount: parseSupabaseNumber(row.total_amount),
+    depositPercentage: parseSupabaseNumber(row.deposit_percentage ?? row.depositPercentage),
+    depositAmount: parseSupabaseNumber(row.deposit_amount ?? row.depositAmount),
     currency: row.currency,
     specialRequests: row.special_requests ?? undefined,
     estimatedArrivalTime: row.estimated_arrival_time ?? undefined,
@@ -239,7 +430,7 @@ function mapRatePlan(row: any): RatePlan {
     description: row.description ?? undefined,
     currency: row.currency,
     pricingMode: row.pricing_mode,
-    basePricePerNight: Number(row.base_price_per_night),
+    basePricePerNight: parseSupabaseNumber(row.base_price_per_night ?? row.basePricePerNight),
     isDefault: row.is_default,
     active: row.active,
     createdAt: row.created_at,
@@ -259,7 +450,7 @@ function mapInventoryRecord(row: any): InventoryRecord {
     closedToDeparture: row.closed_to_departure,
     minStay: row.min_stay ?? undefined,
     maxStay: row.max_stay ?? undefined,
-    baseRate: row.base_rate === null || row.base_rate === undefined ? undefined : Number(row.base_rate),
+    baseRate: row.base_rate === null || row.base_rate === undefined ? undefined : parseSupabaseNumber(row.base_rate),
     source: row.source,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -272,7 +463,7 @@ function mapPayment(row: any): Payment {
     reservationId: row.reservation_id,
     provider: row.provider,
     status: row.status,
-    amount: Number(row.amount),
+    amount: parseSupabaseNumber(row.amount),
     currency: row.currency,
     externalReference: row.external_reference,
     checkoutUrl: row.checkout_url ?? undefined,
@@ -300,9 +491,54 @@ function mapPublicReservationLookup(
     checkOut: row.check_out,
     adults: row.adults,
     children: row.children,
-    totalAmount: Number(row.total_amount),
+    totalAmount: parseSupabaseNumber(row.total_amount),
     currency: row.currency
   };
+}
+
+async function notifyReservationStatusUpdate(reservationId: string, paymentStatus: Payment["status"], checkoutUrl?: string | null) {
+  const supabase = createSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from("reservations")
+    .select(`
+      reservation_code,
+      status,
+      check_in,
+      check_out,
+      guests (
+        full_name,
+        email
+      ),
+      units (
+        name
+      )
+    `)
+    .eq("id", reservationId)
+    .maybeSingle();
+
+  if (error || !data) {
+    throw error ?? new Error("Unable to load reservation notification data.");
+  }
+
+  const reservation = data as unknown as ReservationNotificationRow;
+  const guest = Array.isArray(reservation.guests) ? reservation.guests[0] : reservation.guests;
+  const unit = Array.isArray(reservation.units) ? reservation.units[0] : reservation.units;
+
+  if (!guest?.email) {
+    return;
+  }
+
+  await sendReservationStatusEmail({
+    to: guest.email,
+    fullName: guest.full_name,
+    reservationCode: reservation.reservation_code,
+    unitName: unit?.name ?? "Alojamiento",
+    checkIn: reservation.check_in,
+    checkOut: reservation.check_out,
+    reservationStatus: reservation.status,
+    paymentStatus,
+    checkoutUrl
+  });
 }
 
 function mapInquiry(row: any): Inquiry {
@@ -337,9 +573,13 @@ function mapReservationRequest(row: any): ReservationRequestRecord {
     adults: row.adults,
     children: row.children,
     nights: row.nights,
-    subtotal: Number(row.subtotal),
-    cleaningFee: Number(row.cleaning_fee),
-    totalAmount: Number(row.total_amount),
+    adultsPriceRateId: row.adults_price_rate_id ?? undefined,
+    pricePerNight: parseSupabaseNumber(row.price_per_night ?? row.pricePerNight),
+    subtotal: parseSupabaseNumber(row.subtotal),
+    cleaningFee: parseSupabaseNumber(row.cleaning_fee ?? row.cleaningFee),
+    totalAmount: parseSupabaseNumber(row.total_amount ?? row.totalAmount),
+    depositPercentage: parseSupabaseNumber(row.deposit_percentage ?? row.depositPercentage),
+    depositAmount: parseSupabaseNumber(row.deposit_amount ?? row.depositAmount),
     currency: row.currency,
     specialNotes: row.special_notes ?? undefined,
     estimatedArrivalTime: row.estimated_arrival_time ?? undefined,
@@ -391,29 +631,28 @@ async function fetchSiteSettings(): Promise<SiteSettings> {
     .select("key, value_json");
 
   if (error || !data) {
-    return mockSiteSettings;
+    return EMPTY_SITE_SETTINGS;
   }
 
   const byKey = Object.fromEntries(data.map((item) => [item.key, item.value_json ?? {}]));
   const contact = byKey.contact ?? {};
   const location = byKey.location ?? {};
   const reviews = byKey.reviews ?? {};
+  const general = byKey.general ?? {};
 
   return {
-    whatsappNumber: contact.whatsappNumber ?? mockSiteSettings.whatsappNumber,
-    phone: contact.phone ?? mockSiteSettings.phone,
-    email: contact.email ?? mockSiteSettings.email,
-    instagramUrl: contact.instagramUrl ?? mockSiteSettings.instagramUrl,
-    facebookUrl: contact.facebookUrl ?? mockSiteSettings.facebookUrl,
-    googleReviewsUrl: reviews.googleReviewsUrl ?? mockSiteSettings.googleReviewsUrl,
-    googleMapsUrl:
-      reviews.googleMapsUrl ??
-      location.googleMapsUrl ??
-      mockSiteSettings.googleMapsUrl,
-    address: location.address ?? mockSiteSettings.address,
-    city: location.city ?? mockSiteSettings.city,
-    region: location.region ?? mockSiteSettings.region,
-    coordinates: location.coordinates ?? mockSiteSettings.coordinates
+    whatsappNumber: contact.whatsappNumber ?? "",
+    phone: contact.phone ?? "",
+    email: contact.email ?? "",
+    instagramUrl: contact.instagramUrl ?? "",
+    facebookUrl: contact.facebookUrl ?? "",
+    googleReviewsUrl: reviews.googleReviewsUrl ?? "",
+    googleMapsUrl: reviews.googleMapsUrl ?? location.googleMapsUrl ?? "",
+    address: location.address ?? "",
+    city: location.city ?? "",
+    region: location.region ?? "",
+    depositPercentage: parseSupabaseNumber(general.depositPercentage, EMPTY_SITE_SETTINGS.depositPercentage),
+    coordinates: location.coordinates ?? EMPTY_SITE_SETTINGS.coordinates
   };
 }
 
@@ -437,20 +676,20 @@ async function fetchLandingContent(): Promise<LandingContent> {
 
   return {
     hero: {
-      eyebrow: sectionMap.hero?.eyebrow ?? mockLandingContent.hero.eyebrow,
-      title: sectionMap.hero?.title ?? mockLandingContent.hero.title,
-      subtitle: sectionMap.hero?.subtitle ?? mockLandingContent.hero.subtitle,
-      trustPoints: sectionMap.hero?.trustPoints ?? mockLandingContent.hero.trustPoints,
-      imageUrl: sectionMap.hero?.image ?? mockLandingContent.hero.imageUrl
+      eyebrow: sectionMap.hero?.eyebrow ?? "",
+      title: sectionMap.hero?.title ?? "",
+      subtitle: sectionMap.hero?.subtitle ?? "",
+      trustPoints: sectionMap.hero?.trustPoints ?? [],
+      imageUrl: sectionMap.hero?.image ?? ""
     },
-    about: sectionMap.about?.body ?? mockLandingContent.about,
-    policies: sectionMap.policies?.items ?? mockLandingContent.policies,
+    about: sectionMap.about?.body ?? "",
+    policies: sectionMap.policies?.items ?? [],
     faqs:
       faqRows?.map((faq) => ({
         id: faq.id,
         question: faq.question,
         answer: faq.answer
-      })) ?? mockLandingContent.faqs,
+      })) ?? EMPTY_LANDING_CONTENT.faqs,
     testimonials:
       testimonialRows?.map((testimonial) => ({
         id: testimonial.id,
@@ -459,8 +698,31 @@ async function fetchLandingContent(): Promise<LandingContent> {
         rating: testimonial.rating,
         source: testimonial.source ?? "web",
         active: testimonial.active
-      })) ?? mockLandingContent.testimonials
+      })) ?? EMPTY_LANDING_CONTENT.testimonials
   };
+}
+
+async function fetchPublicFaqs() {
+  if (!hasSupabaseEnv()) {
+    return null;
+  }
+
+  const supabase = createSupabaseServerClient();
+  const { data, error } = await supabase
+    .from("faqs")
+    .select("id, question, answer, sort_order")
+    .eq("active", true)
+    .order("sort_order", { ascending: true });
+
+  if (error || !data) {
+    return null;
+  }
+
+  return data.map((faq) => ({
+    id: faq.id,
+    question: faq.question,
+    answer: faq.answer
+  }));
 }
 
 async function fetchGalleryItems() {
@@ -498,6 +760,8 @@ async function fetchUnits({ activeOnly = false }: { activeOnly?: boolean } = {})
       bathrooms,
       base_price_per_night,
       cleaning_fee,
+      highlights_json,
+      details_json,
       active,
       unit_images (
         id,
@@ -523,10 +787,42 @@ async function fetchUnits({ activeOnly = false }: { activeOnly?: boolean } = {})
   const { data, error } = await query.order("name", { ascending: true });
 
   if (error || !data) {
-    return activeOnly ? mockUnits.filter((unit) => unit.active) : mockUnits;
+    throwSupabaseDataError("units", error);
   }
 
-  return data.map(mapUnit);
+  const unitIds = data.map((unit) => unit.id);
+  const { data: adultRateRows, error: adultRateRowsError } = await supabase
+    .from("adult_price_rates")
+    .select("id, unit_id, adults, price_per_night, active, created_at, updated_at")
+    .in("unit_id", unitIds)
+    .order("adults", { ascending: true });
+
+  if (adultRateRowsError && !isMissingAdultPriceRatesTable(adultRateRowsError)) {
+    throwSupabaseDataError("tarifas por adultos", adultRateRowsError);
+  }
+
+  const adultRatesByUnitId = new Map<string, AdultPriceRate[]>();
+
+  for (const row of adultRateRows ?? []) {
+    const current = adultRatesByUnitId.get(row.unit_id) ?? [];
+    current.push(mapAdultPriceRate(row));
+    adultRatesByUnitId.set(row.unit_id, current);
+  }
+
+  return data.map((row) => mapUnit({
+    ...row,
+    adult_price_rates: adultRatesByUnitId.get(row.id) ?? (
+      isMissingAdultPriceRatesTable(adultRateRowsError)
+        ? Array.from({ length: row.max_guests }, (_, index) => ({
+            id: `${row.id}-fallback-rate-${index + 1}`,
+            unit_id: row.id,
+            adults: index + 1,
+            price_per_night: row.base_price_per_night,
+            active: true
+          }))
+        : []
+    )
+  }));
 }
 
 async function fetchReservations() {
@@ -543,9 +839,13 @@ async function fetchReservations() {
       adults,
       children,
       nights,
+      adults_price_rate_id,
+      price_per_night,
       subtotal,
       cleaning_fee,
       total_amount,
+      deposit_percentage,
+      deposit_amount,
       currency,
       special_requests,
       estimated_arrival_time,
@@ -569,7 +869,7 @@ async function fetchReservations() {
     .order("created_at", { ascending: false });
 
   if (error || !data) {
-    return mockReservations;
+    throwSupabaseDataError("reservas", error);
   }
 
   return data.map(mapReservation);
@@ -651,7 +951,7 @@ async function fetchAvailabilityBlocks() {
     .order("start_date", { ascending: true });
 
   if (error || !data) {
-    return mockAvailabilityBlocks;
+    throwSupabaseDataError("bloqueos de disponibilidad", error);
   }
 
   return data.map(mapAvailabilityBlock);
@@ -661,11 +961,11 @@ async function fetchReservationRequests() {
   const supabase = createSupabaseServiceClient();
   const { data, error } = await supabase
     .from("reservation_requests")
-    .select("id, status, full_name, phone, email, city, country, unit_id, check_in, check_out, adults, children, nights, subtotal, cleaning_fee, total_amount, currency, special_notes, estimated_arrival_time, verified_channel, verification_expires_at, verified_at, reservation_id, created_at, updated_at")
+    .select("id, status, full_name, phone, email, city, country, unit_id, check_in, check_out, adults, children, nights, adults_price_rate_id, price_per_night, subtotal, cleaning_fee, total_amount, deposit_percentage, deposit_amount, currency, special_notes, estimated_arrival_time, verified_channel, verification_expires_at, verified_at, reservation_id, created_at, updated_at")
     .order("created_at", { ascending: false });
 
   if (error || !data) {
-    return mockReservationRequests;
+    throwSupabaseDataError("solicitudes de reserva", error);
   }
 
   return data.map(mapReservationRequest);
@@ -682,11 +982,11 @@ async function fetchContactVerificationByRequestId(reservationRequestId: string)
     .maybeSingle();
 
   if (error || !data) {
-    return (
-      mockContactVerifications
-        .filter((item) => item.reservationRequestId === reservationRequestId)
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0] ?? null
-    );
+    if (error) {
+      throwSupabaseDataError("verificaciones de contacto", error);
+    }
+
+    return null;
   }
 
   return mapContactVerification(data);
@@ -703,7 +1003,7 @@ async function fetchActiveReservationHolds() {
     .order("created_at", { ascending: false });
 
   if (error || !data) {
-    return mockReservationHolds.filter((hold) => hold.status === "active" && hold.expiresAt > now);
+    throwSupabaseDataError("holds de reserva", error);
   }
 
   return data.map(mapReservationHold);
@@ -713,12 +1013,16 @@ async function fetchReservationRequestById(id: string) {
   const supabase = createSupabaseServiceClient();
   const { data, error } = await supabase
     .from("reservation_requests")
-    .select("id, status, full_name, phone, email, city, country, unit_id, check_in, check_out, adults, children, nights, subtotal, cleaning_fee, total_amount, currency, special_notes, estimated_arrival_time, verified_channel, verification_expires_at, verified_at, reservation_id, created_at, updated_at")
+    .select("id, status, full_name, phone, email, city, country, unit_id, check_in, check_out, adults, children, nights, adults_price_rate_id, price_per_night, subtotal, cleaning_fee, total_amount, deposit_percentage, deposit_amount, currency, special_notes, estimated_arrival_time, verified_channel, verification_expires_at, verified_at, reservation_id, created_at, updated_at")
     .eq("id", id)
     .maybeSingle();
 
   if (error || !data) {
-    return mockReservationRequests.find((item) => item.id === id) ?? null;
+    if (error) {
+      throwSupabaseDataError("solicitudes de reserva", error);
+    }
+
+    return null;
   }
 
   return mapReservationRequest(data);
@@ -743,10 +1047,89 @@ async function fetchInquiries() {
     .order("created_at", { ascending: false });
 
   if (error || !data) {
-    return mockInquiries;
+    throwSupabaseDataError("consultas", error);
   }
 
   return data.map(mapInquiry);
+}
+
+async function fetchAdminProfiles() {
+  const supabase = createSupabaseServiceClient();
+  const profilesWithStatus = await supabase
+    .from("profiles")
+    .select("id, full_name, email, role, status, created_at")
+    .order("created_at", { ascending: true });
+
+  if (!profilesWithStatus.error && profilesWithStatus.data) {
+    return profilesWithStatus.data;
+  }
+
+  if (!isMissingProfilesStatusColumn(profilesWithStatus.error)) {
+    throw profilesWithStatus.error;
+  }
+
+  const profilesWithoutStatus = await supabase
+    .from("profiles")
+    .select("id, full_name, email, role, created_at")
+    .order("created_at", { ascending: true });
+
+  if (profilesWithoutStatus.error || !profilesWithoutStatus.data) {
+    throw profilesWithoutStatus.error ?? new Error("No pudimos cargar los perfiles administrativos.");
+  }
+
+  return profilesWithoutStatus.data.map((profile) => ({
+    ...profile,
+    status: "active"
+  }));
+}
+
+async function updateAdminProfileRecord(params: {
+  id: string;
+  email: string;
+  fullName: string;
+  role: "admin" | "staff";
+  status: AdminUser["status"];
+}) {
+  const supabase = createSupabaseServiceClient();
+  const profileWithStatus = await supabase
+    .from("profiles")
+    .update({
+      email: params.email,
+      full_name: params.fullName,
+      role: params.role,
+      status: params.status
+    })
+    .eq("id", params.id)
+    .select("id, email, full_name, role, status, created_at")
+    .single();
+
+  if (!profileWithStatus.error && profileWithStatus.data) {
+    return profileWithStatus.data;
+  }
+
+  if (!isMissingProfilesStatusColumn(profileWithStatus.error)) {
+    throw profileWithStatus.error ?? new Error("No pudimos guardar el perfil del usuario.");
+  }
+
+  const profileWithoutStatus = await supabase
+    .from("profiles")
+    .update({
+      email: params.email,
+      full_name: params.fullName,
+      role: params.role
+    })
+    .eq("id", params.id)
+    .select("id, email, full_name, role, created_at")
+    .single();
+
+  if (profileWithoutStatus.error || !profileWithoutStatus.data) {
+    throw profileWithoutStatus.error ?? new Error("No pudimos guardar el perfil del usuario.");
+  }
+
+  return {
+    ...profileWithoutStatus.data,
+    status: "active"
+  };
 }
 
 function getDefaultRatePlan(unit: Unit, ratePlans: RatePlan[]) {
@@ -760,26 +1143,82 @@ function quoteReservationStay({
   checkIn,
   checkOut,
   unit,
-  ratePlans,
-  inventory
+  adults,
+  children,
+  depositPercentage
 }: {
   checkIn: string;
   checkOut: string;
   unit: Unit;
-  ratePlans: RatePlan[];
-  inventory: InventoryRecord[];
+  adults: number;
+  children?: number;
+  depositPercentage: number;
 }) {
-  const nights = calculateNights(checkIn, checkOut);
-  const defaultPlan = getDefaultRatePlan(unit, ratePlans);
-  const subtotal = unit.basePricePerNight * nights;
+  return {
+    ...buildStayQuote({
+      unit,
+      checkIn,
+      checkOut,
+      adults,
+      children,
+      depositPercentage
+    }),
+    currency: "ARS",
+    ratePlan: getDefaultRatePlan(unit, [])
+  };
+}
+
+function toFiniteNumberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : null;
+}
+
+function normalizeResolvedPricing<T extends {
+  nights?: unknown;
+  pricePerNight?: unknown;
+  basePricePerNight?: unknown;
+  cleaningFee?: unknown;
+  subtotal?: unknown;
+  total?: unknown;
+  totalAmount?: unknown;
+  depositPercentage?: unknown;
+  depositAmount?: unknown;
+  currency?: unknown;
+}>(pricing: T) {
+  const nights = toFiniteNumberOrNull(pricing.nights);
+  const pricePerNight = toFiniteNumberOrNull(pricing.pricePerNight ?? pricing.basePricePerNight);
+  const cleaningFee = toFiniteNumberOrNull(pricing.cleaningFee) ?? 0;
+  const subtotal = toFiniteNumberOrNull(pricing.subtotal);
+  const total = toFiniteNumberOrNull(pricing.total ?? pricing.totalAmount);
+  const depositPercentage =
+    toFiniteNumberOrNull(pricing.depositPercentage) ?? EMPTY_SITE_SETTINGS.depositPercentage;
+  const depositAmount = toFiniteNumberOrNull(pricing.depositAmount);
+
+  if (!nights || pricePerNight === null) {
+    throw new Error("No pudimos calcular el precio de la estadia. Revisa las fechas y la tarifa del alojamiento.");
+  }
+
+  const normalizedSubtotal = subtotal ?? nights * pricePerNight;
+  const normalizedTotal = total ?? normalizedSubtotal + cleaningFee;
+  const normalizedDepositAmount =
+    depositAmount ?? Math.ceil((normalizedTotal * depositPercentage) / 100);
 
   return {
+    ...pricing,
     nights,
-    subtotal,
-    cleaningFee: unit.cleaningFee,
-    total: subtotal + unit.cleaningFee,
-    currency: "ARS",
-    ratePlan: defaultPlan
+    pricePerNight,
+    basePricePerNight: pricePerNight,
+    cleaningFee,
+    subtotal: normalizedSubtotal,
+    total: normalizedTotal,
+    totalAmount: normalizedTotal,
+    depositPercentage,
+    depositAmount: normalizedDepositAmount,
+    currency: typeof pricing.currency === "string" && pricing.currency ? pricing.currency : "ARS"
   };
 }
 
@@ -797,61 +1236,28 @@ async function prepareReservationQuote(payload: {
   specialNotes?: string;
   estimatedArrivalTime?: string;
 }) {
-  if (canUseMockData()) {
-    const selectedUnit = payload.unitId
-      ? mockUnits.find((unit) => unit.id === payload.unitId)
-      : mockUnits[0];
-
-    if (!selectedUnit) {
-      throw new Error("No active units available to create reservation.");
-    }
-
-    const availableUnits = searchAvailableUnits({
-      checkIn: payload.checkIn,
-      checkOut: payload.checkOut,
-      guests: payload.adults + (payload.children ?? 0),
-      units: [selectedUnit],
-      reservations: mockReservations,
-      blocks: [...mockAvailabilityBlocks, ...mockReservationHolds.filter((hold) => hold.status === "active" && hold.expiresAt > new Date().toISOString()).map(reservationHoldToBlock)]
-    });
-
-    if (!availableUnits.some((unit) => unit.id === selectedUnit.id)) {
-      throw new Error("La unidad seleccionada ya no está disponible para esas fechas.");
-    }
-
-    const nights = calculateNights(payload.checkIn, payload.checkOut);
-    const pricing = buildPricingSnapshot({
-      nights,
-      basePricePerNight: selectedUnit.basePricePerNight,
-      cleaningFee: selectedUnit.cleaningFee
-    });
-
-    return {
-      unit: selectedUnit,
-      pricing: {
-        nights,
-        subtotal: pricing.subtotal,
-        cleaningFee: pricing.cleaningFee,
-        total: pricing.total,
-        currency: "USD"
-      }
-    };
+  if (payload.unitId && !UUID_PATTERN.test(payload.unitId)) {
+    throw new Error("La unidad seleccionada no es valida. Volve a elegir el alojamiento antes de continuar.");
   }
 
-  const [units, ratePlans, inventory] = await Promise.all([
+  const [units, siteSettings] = await Promise.all([
     fetchUnits({ activeOnly: true }),
-    fetchRatePlans({ activeOnly: true }),
-    fetchInventory({
-      startDate: payload.checkIn,
-      endDate: payload.checkOut
-    })
+    fetchSiteSettings()
   ]);
   const selectedUnit = payload.unitId
     ? units.find((unit) => unit.id === payload.unitId)
     : units[0];
 
   if (!selectedUnit) {
-    throw new Error("No active units available to create reservation.");
+    throw new Error(
+      payload.unitId
+        ? "La unidad seleccionada ya no esta disponible. Volve a elegir el alojamiento antes de continuar."
+        : "No hay unidades disponibles para esas fechas."
+    );
+  }
+
+  if (!UUID_PATTERN.test(selectedUnit.id)) {
+    throw new Error("No pudimos validar la unidad seleccionada. Recarga la pagina e intenta nuevamente.");
   }
 
   const activeHolds = await fetchActiveReservationHolds();
@@ -859,7 +1265,7 @@ async function prepareReservationQuote(payload: {
   const availableUnits = searchAvailableUnits({
     checkIn: payload.checkIn,
     checkOut: payload.checkOut,
-    guests: payload.adults + (payload.children ?? 0),
+    guests: payload.adults,
     units: [selectedUnit],
     reservations: await fetchReservations(),
     blocks: mergedBlocks
@@ -873,25 +1279,19 @@ async function prepareReservationQuote(payload: {
     checkIn: payload.checkIn,
     checkOut: payload.checkOut,
     unit: selectedUnit,
-    ratePlans,
-    inventory
+    adults: payload.adults,
+    children: payload.children,
+    depositPercentage: siteSettings.depositPercentage
   });
 
   return {
     unit: selectedUnit,
-    pricing
+    pricing: normalizeResolvedPricing(pricing)
   };
 }
 
 export async function getLandingPageData() {
-  if (canUseMockData()) {
-    return {
-      units: mockUnits,
-      siteSettings: mockSiteSettings,
-      landingContent: mockLandingContent,
-      gallery: mockGalleryItems
-    };
-  }
+  assertRealDataMode("la landing publica");
 
   const [units, siteSettings, landingContent, gallery] = await Promise.all([
     fetchUnits({ activeOnly: true }),
@@ -909,34 +1309,7 @@ export async function getLandingPageData() {
 }
 
 export async function getDashboardData() {
-  if (canUseMockData()) {
-    const now = new Date("2026-07-04T12:00:00.000Z");
-    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-
-    const reservationsThisMonth = mockReservations.filter(
-      (reservation) => new Date(reservation.createdAt) >= startOfMonth
-    );
-    const pendingRequests = mockReservations.filter((reservation) => reservation.status === "pending");
-    const upcomingConfirmed = mockReservations.filter(
-      (reservation) =>
-        reservation.status === "confirmed" && new Date(reservation.checkIn) >= now
-    );
-
-    return {
-      metrics: {
-        reservationsThisMonth: reservationsThisMonth.length,
-        pendingRequests: pendingRequests.length,
-        upcomingConfirmed: upcomingConfirmed.length,
-        occupancyPercentage: 64,
-        blockedDates: mockAvailabilityBlocks.length,
-        recentInquiries: mockInquiries.length
-      },
-      reservations: mockReservations,
-      blocks: mockAvailabilityBlocks,
-      inquiries: mockInquiries,
-      units: mockUnits
-    };
-  }
+  assertRealDataMode("el dashboard");
 
   const [reservations, blocks, inquiries, units] = await Promise.all([
     fetchReservations(),
@@ -983,21 +1356,15 @@ export async function searchUnits({
   guests: number;
   unitId?: string;
 }) {
-  const [units, reservations, blocks, inventory, holds] = canUseMockData()
-    ? [
-        mockUnits,
-        mockReservations,
-        mockAvailabilityBlocks,
-        [] as InventoryRecord[],
-        mockReservationHolds.filter((hold) => hold.status === "active" && hold.expiresAt > new Date().toISOString())
-      ]
-    : await Promise.all([
-        fetchUnits({ activeOnly: true }),
-        fetchReservations(),
-        fetchAvailabilityBlocks(),
-        fetchInventory({ startDate: checkIn, endDate: checkOut }),
-        fetchActiveReservationHolds()
-      ]);
+  assertRealDataMode("la busqueda de disponibilidad");
+
+  const [units, reservations, blocks, inventory, holds] = await Promise.all([
+    fetchUnits({ activeOnly: true }),
+    fetchReservations(),
+    fetchAvailabilityBlocks(),
+    fetchInventory({ startDate: checkIn, endDate: checkOut }),
+    fetchActiveReservationHolds()
+  ]);
 
   const pool = unitId ? units.filter((unit) => unit.id === unitId) : units;
   const mergedBlocks = [...blocks, ...holds.map(reservationHoldToBlock)];
@@ -1042,71 +1409,14 @@ export async function startReservationRequestVerification(payload: {
   specialNotes?: string;
   estimatedArrivalTime?: string;
 }) {
+  assertRealDataMode("el inicio de la reserva");
+
   const now = new Date();
   const verificationExpiresAt = addMinutes(now, OTP_EXPIRATION_MINUTES).toISOString();
   const resendAvailableAt = addSeconds(now, OTP_RESEND_COOLDOWN_SECONDS).toISOString();
   const code = generateOtpCode();
   const otpHash = hashOtpCode(code);
   const { unit, pricing } = await prepareReservationQuote(payload);
-
-  if (canUseMockData()) {
-    const request: ReservationRequestRecord = {
-      id: crypto.randomUUID(),
-      status: "pending_verification",
-      fullName: payload.fullName,
-      phone: payload.phone,
-      email: payload.email,
-      city: payload.city,
-      country: payload.country,
-      unitId: unit.id,
-      checkIn: payload.checkIn,
-      checkOut: payload.checkOut,
-      adults: payload.adults,
-      children: payload.children ?? 0,
-      nights: pricing.nights,
-      subtotal: pricing.subtotal,
-      cleaningFee: pricing.cleaningFee,
-      totalAmount: pricing.total,
-      currency: pricing.currency,
-      specialNotes: payload.specialNotes,
-      estimatedArrivalTime: payload.estimatedArrivalTime,
-      verificationExpiresAt,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-    const verification: ContactVerificationRecord = {
-      id: crypto.randomUUID(),
-      reservationRequestId: request.id,
-      channel: "email",
-      targetEmail: payload.email,
-      otpHash,
-      expiresAt: verificationExpiresAt,
-      attemptCount: 0,
-      lastSentAt: now.toISOString(),
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString()
-    };
-
-    mockReservationRequests.unshift(request);
-    mockContactVerifications.unshift(verification);
-
-    await sendReservationOtpEmail({
-      to: payload.email,
-      fullName: payload.fullName,
-      code,
-      unitName: unit.name,
-      checkIn: payload.checkIn,
-      checkOut: payload.checkOut,
-      expiresInMinutes: OTP_EXPIRATION_MINUTES
-    });
-
-    return {
-      requestId: request.id,
-      maskedEmail: maskEmail(payload.email),
-      expiresAt: verificationExpiresAt,
-      resendAvailableAt
-    };
-  }
 
   const supabase = createSupabaseServiceClient();
   const { data: requestRow, error: requestError } = await supabase
@@ -1124,9 +1434,13 @@ export async function startReservationRequestVerification(payload: {
       adults: payload.adults,
       children: payload.children ?? 0,
       nights: pricing.nights,
+      adults_price_rate_id: pricing.adultsPriceRateId,
+      price_per_night: pricing.pricePerNight,
       subtotal: pricing.subtotal,
       cleaning_fee: pricing.cleaningFee,
       total_amount: pricing.total,
+      deposit_percentage: pricing.depositPercentage,
+      deposit_amount: pricing.depositAmount,
       currency: pricing.currency,
       special_notes: payload.specialNotes ?? null,
       estimated_arrival_time: payload.estimatedArrivalTime ?? null,
@@ -1176,6 +1490,8 @@ export async function verifyReservationRequestCode(payload: {
   requestId: string;
   code: string;
 }) {
+  assertRealDataMode("la validacion del codigo OTP");
+
   const now = new Date();
   const request = await fetchReservationRequestById(payload.requestId);
 
@@ -1271,6 +1587,8 @@ export async function verifyReservationRequestCode(payload: {
 }
 
 export async function resendReservationRequestCode(payload: { requestId: string }) {
+  assertRealDataMode("el reenvio del codigo OTP");
+
   const now = new Date();
   const request = await fetchReservationRequestById(payload.requestId);
 
@@ -1291,7 +1609,7 @@ export async function resendReservationRequestCode(payload: { requestId: string 
   const code = generateOtpCode();
   const expiresAt = addMinutes(now, OTP_EXPIRATION_MINUTES).toISOString();
   const resendAvailableAt = addSeconds(now, OTP_RESEND_COOLDOWN_SECONDS).toISOString();
-  const unit = (canUseMockData() ? mockUnits : await fetchUnits({ activeOnly: false })).find((item) => item.id === request.unitId);
+  const unit = (await fetchUnits({ activeOnly: false })).find((item) => item.id === request.unitId);
 
   if (!unit) {
     throw new Error("La unidad seleccionada ya no existe.");
@@ -1393,6 +1711,8 @@ export async function resendReservationRequestCode(payload: { requestId: string 
 export async function createReservationCheckoutFromVerifiedRequest(payload: {
   requestId: string;
 }) {
+  assertRealDataMode("la generacion del checkout");
+
   const now = new Date();
   const request = await fetchReservationRequestById(payload.requestId);
 
@@ -1415,7 +1735,7 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
   const availableUnits = await searchUnits({
     checkIn: request.checkIn,
     checkOut: request.checkOut,
-    guests: request.adults + request.children,
+    guests: request.adults,
     unitId: request.unitId
   });
 
@@ -1430,8 +1750,9 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
     checkIn: request.checkIn,
     checkOut: request.checkOut,
     unit: selectedUnit,
-    ratePlans: [],
-    inventory: []
+    adults: request.adults,
+    children: request.children,
+    depositPercentage: request.depositPercentage || EMPTY_SITE_SETTINGS.depositPercentage
   });
 
   const holdExpiresAt = addMinutes(now, RESERVATION_HOLD_MINUTES).toISOString();
@@ -1474,36 +1795,18 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
       adults: request.adults,
       children: request.children,
       nights: currentPricing.nights,
+      adultsPriceRateId: currentPricing.adultsPriceRateId,
+      pricePerNight: currentPricing.pricePerNight,
       subtotal: currentPricing.subtotal,
       cleaningFee: currentPricing.cleaningFee,
       totalAmount: currentPricing.total,
+      depositPercentage: currentPricing.depositPercentage ?? EMPTY_SITE_SETTINGS.depositPercentage,
+      depositAmount: currentPricing.depositAmount,
       currency: currentPricing.currency,
       specialRequests: request.specialNotes,
       estimatedArrivalTime: request.estimatedArrivalTime,
       createdAt: now.toISOString()
     };
-    mockReservations.unshift(reservation);
-
-    const requestIndex = mockReservationRequests.findIndex((item) => item.id === request.id);
-    const holdIndex = mockReservationHolds.findIndex((item) => item.id === hold.id);
-
-    if (requestIndex >= 0) {
-      mockReservationRequests[requestIndex] = {
-        ...mockReservationRequests[requestIndex],
-        status: "checkout_created",
-        reservationId: reservation.id,
-        updatedAt: now.toISOString()
-      };
-    }
-
-    if (holdIndex >= 0) {
-      mockReservationHolds[holdIndex] = {
-        ...mockReservationHolds[holdIndex],
-        reservationId: reservation.id,
-        updatedAt: now.toISOString()
-      };
-    }
-
     throw new Error("El modo mock no puede continuar sin un checkout real de Mercado Pago.");
   }
 
@@ -1518,7 +1821,7 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
   checkout = await createMercadoPagoPreference({
     reservationCode,
     title: `${selectedUnit.name} - ${currentPricing.nights} noches`,
-    amount: currentPricing.total,
+    amount: currentPricing.depositAmount,
     currency: currentPricing.currency,
     payerName: request.fullName,
     payerEmail: request.email
@@ -1574,9 +1877,13 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
       adults: request.adults,
       children: request.children,
       nights: currentPricing.nights,
+      adults_price_rate_id: currentPricing.adultsPriceRateId,
+      price_per_night: currentPricing.pricePerNight,
       subtotal: currentPricing.subtotal,
       cleaning_fee: currentPricing.cleaningFee,
       total_amount: currentPricing.total,
+      deposit_percentage: currentPricing.depositPercentage,
+      deposit_amount: currentPricing.depositAmount,
       currency: currentPricing.currency,
       special_requests: request.specialNotes ?? null,
       estimated_arrival_time: request.estimatedArrivalTime ?? null
@@ -1597,7 +1904,7 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
         reservation_id: reservationRow.id,
         provider: "mercado_pago",
         status: "pending",
-        amount: currentPricing.total,
+        amount: currentPricing.depositAmount,
         currency: currentPricing.currency,
         external_reference: reservationCode,
         checkout_url: checkout.checkoutUrl ?? null,
@@ -1629,9 +1936,13 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
       .from("reservation_requests")
       .update({
         nights: currentPricing.nights,
+        adults_price_rate_id: currentPricing.adultsPriceRateId,
+        price_per_night: currentPricing.pricePerNight,
         subtotal: currentPricing.subtotal,
         cleaning_fee: currentPricing.cleaningFee,
         total_amount: currentPricing.total,
+        deposit_percentage: currentPricing.depositPercentage,
+        deposit_amount: currentPricing.depositAmount,
         currency: currentPricing.currency,
         status: "checkout_created",
         reservation_id: reservationRow.id
@@ -1641,6 +1952,22 @@ export async function createReservationCheckoutFromVerifiedRequest(payload: {
 
   if (holdUpdateError || requestUpdateError) {
     throw holdUpdateError ?? requestUpdateError ?? new Error("No pudimos vincular la reserva con el hold.");
+  }
+
+  try {
+    await sendReservationAccessEmail({
+      to: request.email,
+      fullName: request.fullName,
+      reservationCode: reservationRow.reservation_code,
+      unitName: selectedUnit.name,
+      checkIn: request.checkIn,
+      checkOut: request.checkOut,
+      totalAmount: currentPricing.total,
+      currency: currentPricing.currency,
+      checkoutUrl: payment?.checkoutUrl ?? null
+    });
+  } catch (error) {
+    console.error("[reservation-access-email]", error);
   }
 
   return {
@@ -1776,23 +2103,7 @@ async function getExistingCheckoutForRequest(request: ReservationRequestRecord) 
     throw new Error("La solicitud todavía no generó una reserva.");
   }
 
-  if (canUseMockData()) {
-    throw new Error("El modo mock no puede recuperar un checkout real de Mercado Pago.");
-  }
-
-  if (canUseMockData()) {
-    const reservation = mockReservations.find((item) => item.id === request.reservationId);
-
-    if (!reservation) {
-      throw new Error("La reserva asociada ya no está disponible.");
-    }
-
-    return {
-      reservationCode: reservation.reservationCode,
-      checkoutUrl: null,
-      paymentId: null
-    };
-  }
+  assertRealDataMode("la recuperacion del checkout");
 
   const supabase = createSupabaseServiceClient();
   const [{ data: reservationRow, error: reservationError }, { data: paymentRow, error: paymentError }] = await Promise.all([
@@ -1839,65 +2150,12 @@ export async function createReservationRequest(payload: {
   specialNotes?: string;
   estimatedArrivalTime?: string;
 }) {
-  if (canUseMockData()) {
-    const selectedUnit: Unit | undefined = payload.unitId
-      ? mockUnits.find((unit) => unit.id === payload.unitId)
-      : mockUnits[0];
-
-    const nights = calculateNights(payload.checkIn, payload.checkOut);
-    const pricing = buildPricingSnapshot({
-      nights,
-      basePricePerNight: selectedUnit?.basePricePerNight ?? 0,
-      cleaningFee: selectedUnit?.cleaningFee ?? 0
-    });
-
-    const reservation: Reservation = {
-      id: crypto.randomUUID(),
-      reservationCode: `LAT-${Date.now().toString().slice(-6)}`,
-      guest: {
-        id: crypto.randomUUID(),
-        fullName: payload.fullName,
-        phone: payload.phone,
-        email: payload.email,
-        city: payload.city,
-        country: payload.country
-      },
-      unit: {
-        id: selectedUnit?.id ?? "unassigned",
-        name: selectedUnit?.name ?? "Por asignar",
-        slug: selectedUnit?.slug ?? "por-asignar"
-      },
-      source: "website",
-      status: hasMercadoPagoEnv() ? "pending_payment" : "pending",
-      checkIn: payload.checkIn,
-      checkOut: payload.checkOut,
-      adults: payload.adults,
-      children: payload.children ?? 0,
-      nights,
-      subtotal: pricing.subtotal,
-      cleaningFee: pricing.cleaningFee,
-      totalAmount: pricing.total,
-      currency: "USD",
-      specialRequests: payload.specialNotes,
-      estimatedArrivalTime: payload.estimatedArrivalTime,
-      createdAt: new Date().toISOString()
-    };
-
-    return {
-      reservation,
-      payment: undefined,
-      checkoutUrl: undefined
-    };
-  }
+  assertRealDataMode("la creacion de reservas publicas");
 
   const supabase = createSupabaseServiceClient();
-  const [units, ratePlans, inventory] = await Promise.all([
+  const [units, siteSettings] = await Promise.all([
     fetchUnits({ activeOnly: true }),
-    fetchRatePlans({ activeOnly: true }),
-    fetchInventory({
-      startDate: payload.checkIn,
-      endDate: payload.checkOut
-    })
+    fetchSiteSettings()
   ]);
   const selectedUnit = payload.unitId
     ? units.find((unit) => unit.id === payload.unitId)
@@ -1910,7 +2168,7 @@ export async function createReservationRequest(payload: {
   const availableUnits = await searchUnits({
     checkIn: payload.checkIn,
     checkOut: payload.checkOut,
-    guests: payload.adults + (payload.children ?? 0),
+    guests: payload.adults,
     unitId: selectedUnit.id
   });
 
@@ -1922,8 +2180,9 @@ export async function createReservationRequest(payload: {
     checkIn: payload.checkIn,
     checkOut: payload.checkOut,
     unit: selectedUnit,
-    ratePlans,
-    inventory
+    adults: payload.adults,
+    children: payload.children,
+    depositPercentage: siteSettings.depositPercentage
   });
 
   let checkout:
@@ -1938,7 +2197,7 @@ export async function createReservationRequest(payload: {
     checkout = await createMercadoPagoPreference({
       reservationCode,
       title: `${selectedUnit.name} - ${pricing.nights} noches`,
-      amount: pricing.total,
+      amount: pricing.depositAmount,
       currency: pricing.currency,
       payerName: payload.fullName,
       payerEmail: payload.email
@@ -1974,9 +2233,13 @@ export async function createReservationRequest(payload: {
       adults: payload.adults,
       children: payload.children ?? 0,
       nights: pricing.nights,
+      adults_price_rate_id: pricing.adultsPriceRateId,
+      price_per_night: pricing.pricePerNight,
       subtotal: pricing.subtotal,
       cleaning_fee: pricing.cleaningFee,
       total_amount: pricing.total,
+      deposit_percentage: pricing.depositPercentage,
+      deposit_amount: pricing.depositAmount,
       currency: pricing.currency,
       special_requests: payload.specialNotes ?? null,
       estimated_arrival_time: payload.estimatedArrivalTime ?? null
@@ -1991,9 +2254,13 @@ export async function createReservationRequest(payload: {
       adults,
       children,
       nights,
+      adults_price_rate_id,
+      price_per_night,
       subtotal,
       cleaning_fee,
       total_amount,
+      deposit_percentage,
+      deposit_amount,
       currency,
       special_requests,
       estimated_arrival_time,
@@ -2029,7 +2296,7 @@ export async function createReservationRequest(payload: {
         reservation_id: reservationRow.id,
         provider: "mercado_pago",
         status: "pending",
-        amount: pricing.total,
+        amount: pricing.depositAmount,
         currency: pricing.currency,
         external_reference: reservationCode,
         checkout_url: checkout.checkoutUrl ?? null,
@@ -2067,26 +2334,7 @@ export async function createInquiry(payload: {
   unitId?: string;
   source?: string;
 }) {
-  if (canUseMockData()) {
-    const inquiry: Inquiry = {
-      id: crypto.randomUUID(),
-      fullName: payload.fullName,
-      phone: payload.phone,
-      email: payload.email,
-      message: payload.message,
-      checkIn: payload.checkIn,
-      checkOut: payload.checkOut,
-      guestsCount: payload.guestsCount,
-      unitId: payload.unitId,
-      source: payload.source ?? "website",
-      status: "new",
-      createdAt: new Date().toISOString()
-    };
-
-    mockInquiries.unshift(inquiry);
-
-    return inquiry;
-  }
+  assertRealDataMode("las consultas publicas");
 
   const supabase = createSupabaseServiceClient();
   const { data, error } = await supabase
@@ -2120,30 +2368,6 @@ export async function lookupPublicReservation(payload: {
   const normalizedEmail = payload.email.trim().toLowerCase();
   const normalizedCode = payload.reservationCode.trim().toLowerCase();
 
-  if (canUseMockData()) {
-    const reservation = mockReservations.find(
-      (item) =>
-        item.reservationCode.trim().toLowerCase() === normalizedCode &&
-        item.guest.email.trim().toLowerCase() === normalizedEmail
-    );
-
-    if (!reservation) {
-      throw new Error(PUBLIC_RESERVATION_LOOKUP_ERROR);
-    }
-
-    return {
-      reservationCode: reservation.reservationCode,
-      status: reservation.status,
-      unitName: reservation.unit.name,
-      checkIn: reservation.checkIn,
-      checkOut: reservation.checkOut,
-      adults: reservation.adults,
-      children: reservation.children,
-      totalAmount: reservation.totalAmount,
-      currency: reservation.currency
-    };
-  }
-
   const supabase = createSupabaseServiceClient();
   const { data, error } = await supabase
     .from("reservations")
@@ -2165,7 +2389,8 @@ export async function lookupPublicReservation(payload: {
       )
     `)
     .ilike("reservation_code", payload.reservationCode.trim())
-    .limit(2);
+    .eq("guests.email", normalizedEmail)
+    .limit(1);
 
   if (error) {
     throw error;
@@ -2221,8 +2446,9 @@ export async function getAdminState(): Promise<AdminState> {
     { data: guestsRows },
     { data: galleryRows },
     { data: seasonRows },
-    { data: profileRows },
+    profileRows,
     { data: contentRows },
+    { data: siteSettingsRows },
     siteSettings
   ] = await Promise.all([
     fetchReservations(),
@@ -2234,14 +2460,17 @@ export async function getAdminState(): Promise<AdminState> {
     supabase.from("guests").select("id, full_name, email, phone, city"),
     supabase.from("gallery_items").select("id, title, category, image_url, storage_path").eq("active", true).order("sort_order", { ascending: true }),
     supabase.from("price_seasons").select("id, name, start_date, end_date, prices_json").order("start_date", { ascending: true }),
-    supabase.from("profiles").select("id, full_name, email, role, created_at").order("created_at", { ascending: true }),
+    fetchAdminProfiles(),
     supabase.from("pages_content").select("section, content_json").eq("page", "home"),
+    supabase.from("site_settings").select("key, value_json"),
     fetchSiteSettings()
   ]);
 
   const contentMap = Object.fromEntries((contentRows ?? []).map((row) => [row.section, row.content_json ?? {}]));
+  const settingsMap = Object.fromEntries((siteSettingsRows ?? []).map((row) => [row.key, row.value_json ?? {}]));
+  const generalSettings = settingsMap.general ?? {};
 
-  return {
+  return ({
     reservations: reservations.map((reservation) => ({
       id: reservation.reservationCode,
       guestName: reservation.guest.fullName,
@@ -2284,34 +2513,30 @@ export async function getAdminState(): Promise<AdminState> {
           ? ("frequent" as const)
           : ("new" as const)
     })),
-    inquiries: inquiries.map((inquiry) => ({
-      id: inquiry.id,
-      createdAt: inquiry.createdAt,
-      name: inquiry.fullName,
-      contact: inquiry.phone || inquiry.email,
-      channel:
-        inquiry.source === "whatsapp"
-          ? "WhatsApp"
-          : inquiry.source === "instagram"
-            ? "Instagram"
-            : inquiry.source === "email"
-              ? "Email"
-              : "Web",
-      subject: inquiry.message.slice(0, 72),
-      message: inquiry.message,
-      status:
-        inquiry.status === "new"
-          ? ("new" as const)
-          : inquiry.status === "contacted"
-            ? ("in_progress" as const)
-            : ("resolved" as const)
-    })),
+    inquiries: inquiries.map((inquiry) => {
+      const parsedInquiryContent = parseInquiryMessageContent(inquiry.message);
+
+      return {
+        id: inquiry.id,
+        createdAt: inquiry.createdAt,
+        name: inquiry.fullName,
+        contact: inquiry.phone || inquiry.email,
+        channel: mapSourceToInquiryChannel(inquiry.source),
+        subject: parsedInquiryContent.subject,
+        message: parsedInquiryContent.message,
+        status: mapInquiryStatusToAdmin(inquiry.status)
+      };
+    }),
     units: units.map((unit) => ({
       id: unit.id,
       name: unit.name,
       capacity: unit.maxGuests,
       beds: unit.beds,
-      price: unit.basePricePerNight,
+      price: unit.fromPricePerNight,
+      fromPricePerNight: unit.fromPricePerNight,
+      bedrooms: unit.bedrooms,
+      bathrooms: unit.bathrooms,
+      cleaningFee: unit.cleaningFee,
       image: unit.featuredImage,
       images: unit.images.map((image) => ({
         id: image.id,
@@ -2321,7 +2546,17 @@ export async function getAdminState(): Promise<AdminState> {
         storagePath: image.storagePath
       })),
       status: unit.active ? "active" : "draft",
-      description: unit.shortDescription
+      shortDescription: unit.shortDescription,
+      description: unit.description,
+      amenities: unit.amenities.map((amenity) => amenity.name),
+      highlights: unit.highlights,
+      details: unit.details,
+      adultPriceRates: unit.adultPriceRates.map((rate) => ({
+        id: rate.id,
+        adults: rate.adults,
+        pricePerNight: rate.pricePerNight,
+        active: rate.active
+      }))
     })),
     inventory: inventory.map((item) => ({
       id: item.id,
@@ -2362,14 +2597,11 @@ export async function getAdminState(): Promise<AdminState> {
       id: profile.id,
       name: profile.full_name ?? "Usuario",
       email: profile.email,
-      role:
-        profile.role === "admin"
-          ? ("Administrador" as const)
-          : ("Editor" as const),
-      status: "active" as const,
+      role: mapDatabaseRoleToAdmin(profile.role),
+      status: (profile.status ?? "active") as AdminUser["status"],
       lastAccess: profile.created_at
     })),
-    siteContent: {
+    legacySiteContent: {
       heroTitle: contentMap.hero?.title ?? "Los Álamos Tilcara",
       heroSubtitle: contentMap.hero?.subtitle ?? "",
       heroImage: contentMap.hero?.image ?? units[0]?.featuredImage ?? "",
@@ -2378,18 +2610,40 @@ export async function getAdminState(): Promise<AdminState> {
       testimonialsTitle: "Lo que dicen nuestros huéspedes",
       locationTitle: "Ubicación",
       policiesTitle: "Políticas",
-      faqs: (mockLandingContent.faqs ?? []).map((faq) => ({
-        id: faq.id,
+      faqs: (contentMap.faqs?.items ?? []).map((faq: { id?: string; question: string; answer: string }, index: number) => ({
+        id: faq.id ?? `faq-${index + 1}`,
         question: faq.question,
         answer: faq.answer
       })),
-      policies: (mockLandingContent.policies ?? []).map((policy, index) => ({
+      policies: (contentMap.policies?.items ?? []).map((policy: { title: string; body: string }, index: number) => ({
         id: `policy-${index + 1}`,
         title: policy.title,
         body: policy.body
       }))
     },
-    settings: {
+    siteContent: {
+      heroEyebrow: contentMap.hero?.eyebrow ?? "",
+      heroTitle: contentMap.hero?.title ?? "",
+      heroSubtitle: contentMap.hero?.subtitle ?? "",
+      heroImage: contentMap.hero?.image ?? units[0]?.featuredImage ?? "",
+      heroTrustPoints: contentMap.hero?.trustPoints ?? [],
+      aboutTitle: contentMap.about?.title ?? "",
+      aboutBody: contentMap.about?.body ?? "",
+      testimonialsTitle: contentMap.testimonials?.title ?? "",
+      locationTitle: contentMap.location?.title ?? "",
+      policiesTitle: contentMap.policies?.title ?? "",
+      faqs: ((contentMap.faqs?.items as Array<{ id?: string; question?: string; answer?: string }> | undefined) ?? []).map((faq, index) => ({
+        id: faq.id ?? `faq-${index + 1}`,
+        question: faq.question ?? "",
+        answer: faq.answer ?? ""
+      })),
+      policies: ((contentMap.policies?.items as Array<{ id?: string; title?: string; body?: string }> | undefined) ?? []).map((policy, index) => ({
+        id: policy.id ?? `policy-${index + 1}`,
+        title: policy.title ?? "",
+        body: policy.body ?? ""
+      }))
+    },
+    legacySettings: {
       propertyName: "Los Álamos Tilcara",
       contactEmail: siteSettings.email,
       phone: siteSettings.phone,
@@ -2398,8 +2652,29 @@ export async function getAdminState(): Promise<AdminState> {
       checkInTime: "15:00",
       checkOutTime: "10:00",
       address: siteSettings.address
+    },
+    settings: {
+      propertyName: generalSettings.propertyName ?? "",
+      whatsappNumber: siteSettings.whatsappNumber,
+      contactEmail: siteSettings.email,
+      phone: siteSettings.phone,
+      instagramUrl: siteSettings.instagramUrl,
+      facebookUrl: siteSettings.facebookUrl,
+      googleReviewsUrl: siteSettings.googleReviewsUrl ?? "",
+      googleMapsUrl: siteSettings.googleMapsUrl ?? "",
+      currency: generalSettings.currency ?? "",
+      timezone: generalSettings.timezone ?? "",
+      checkInTime: generalSettings.checkInTime ?? "",
+      checkOutTime: generalSettings.checkOutTime ?? "",
+      depositPercentage: parseSupabaseNumber(
+        generalSettings.depositPercentage ?? siteSettings.depositPercentage,
+        10
+      ),
+      address: siteSettings.address,
+      city: siteSettings.city,
+      region: siteSettings.region
     }
-  };
+  } as AdminState);
 }
 
 function deriveReservationStatus(status: string): "active" | "draft" | "maintenance" {
@@ -2408,6 +2683,113 @@ function deriveReservationStatus(status: string): "active" | "draft" | "maintena
   }
 
   return status === "active" ? "active" : "draft";
+}
+
+function buildInquiryMessage(subject: string, message: string) {
+  const normalizedSubject = subject.trim();
+  const normalizedMessage = message.trim();
+
+  if (!normalizedSubject) {
+    return normalizedMessage;
+  }
+
+  if (!normalizedMessage) {
+    return `Subject: ${normalizedSubject}`;
+  }
+
+  return `Subject: ${normalizedSubject}\n\n${normalizedMessage}`;
+}
+
+function parseInquiryMessageContent(message: string) {
+  const normalizedMessage = message.trim();
+  const subjectPrefix = "Subject:";
+
+  if (!normalizedMessage) {
+    return {
+      subject: "",
+      message: ""
+    };
+  }
+
+  if (!normalizedMessage.startsWith(subjectPrefix)) {
+    return {
+      subject: normalizedMessage.slice(0, 72),
+      message: normalizedMessage
+    };
+  }
+
+  const [, ...rest] = normalizedMessage.split(/\r?\n/);
+  const subject = normalizedMessage.slice(subjectPrefix.length).split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const body = rest.join("\n").trim();
+
+  return {
+    subject,
+    message: body || subject
+  };
+}
+
+function mapInquiryStatusToAdmin(status: string): AdminInquiry["status"] {
+  if (status === "contacted") {
+    return "in_progress";
+  }
+
+  if (status === "converted" || status === "closed") {
+    return "resolved";
+  }
+
+  return "new";
+}
+
+function mapAdminInquiryStatusToDatabase(status: AdminInquiry["status"]) {
+  if (status === "in_progress") {
+    return "contacted";
+  }
+
+  if (status === "resolved") {
+    return "closed";
+  }
+
+  return "new";
+}
+
+function mapInquiryChannelToSource(channel: AdminInquiry["channel"]) {
+  if (channel === "WhatsApp") {
+    return "whatsapp";
+  }
+
+  if (channel === "Instagram") {
+    return "instagram";
+  }
+
+  if (channel === "Email") {
+    return "email";
+  }
+
+  return "website";
+}
+
+function mapSourceToInquiryChannel(source: string): AdminInquiry["channel"] {
+  if (source === "whatsapp") {
+    return "WhatsApp";
+  }
+
+  if (source === "instagram") {
+    return "Instagram";
+  }
+
+  if (source === "email") {
+    return "Email";
+  }
+
+  return "Web";
+}
+
+function mapAdminRoleToDatabase(role: AdminUser["role"]): "admin" | "staff" {
+  return role === "Administrador" ? "admin" : "staff";
+}
+
+function mapDatabaseRoleToAdmin(role: string): AdminUser["role"] {
+  return role === "admin" ? "Administrador" : "Editor";
 }
 
 export async function upsertAdminReservation(payload: {
@@ -2738,6 +3120,291 @@ export async function removeAvailabilityBlock(id: string) {
   }
 }
 
+export async function upsertAdminGuest(payload: {
+  id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  city: string;
+}) {
+  const supabase = createSupabaseServiceClient();
+  const guestResult = payload.id
+    ? await supabase
+        .from("guests")
+        .update({
+          full_name: payload.name,
+          email: payload.email,
+          phone: payload.phone,
+          city: payload.city
+        })
+        .eq("id", payload.id)
+        .select("id, full_name, email, phone, city")
+        .single()
+    : await supabase
+        .from("guests")
+        .insert({
+          full_name: payload.name,
+          email: payload.email,
+          phone: payload.phone,
+          city: payload.city
+        })
+        .select("id, full_name, email, phone, city")
+        .single();
+
+  if (guestResult.error || !guestResult.data) {
+    throw guestResult.error ?? new Error("No pudimos guardar el huesped.");
+  }
+
+  const { count, error: reservationsCountError } = await supabase
+    .from("reservations")
+    .select("*", { count: "exact", head: true })
+    .eq("guest_id", guestResult.data.id);
+
+  if (reservationsCountError) {
+    throw reservationsCountError;
+  }
+
+  const reservationsCount = count ?? 0;
+
+  return {
+    id: guestResult.data.id,
+    name: guestResult.data.full_name,
+    email: guestResult.data.email,
+    phone: guestResult.data.phone,
+    city: guestResult.data.city ?? "",
+    reservationsCount,
+    status: reservationsCount > 1 ? "frequent" : "new"
+  } satisfies AdminState["guests"][number];
+}
+
+export async function removeAdminGuest(id: string) {
+  const supabase = createSupabaseServiceClient();
+  const { count, error: reservationsCountError } = await supabase
+    .from("reservations")
+    .select("*", { count: "exact", head: true })
+    .eq("guest_id", id);
+
+  if (reservationsCountError) {
+    throw reservationsCountError;
+  }
+
+  if ((count ?? 0) > 0) {
+    throw new Error("No puedes eliminar un huesped que ya tiene reservas asociadas.");
+  }
+
+  const { error } = await supabase.from("guests").delete().eq("id", id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function upsertAdminInquiry(payload: {
+  id?: string;
+  name: string;
+  contact: string;
+  channel: AdminInquiry["channel"];
+  subject: string;
+  message: string;
+  status: AdminInquiry["status"];
+}) {
+  const supabase = createSupabaseServiceClient();
+  const fullMessage = buildInquiryMessage(payload.subject, payload.message);
+  const inquiryResult = payload.id
+    ? await supabase
+        .from("inquiries")
+        .update({
+          full_name: payload.name,
+          phone: payload.contact,
+          email: payload.contact,
+          message: fullMessage,
+          source: mapInquiryChannelToSource(payload.channel),
+          status: mapAdminInquiryStatusToDatabase(payload.status)
+        })
+        .eq("id", payload.id)
+        .select("id, full_name, phone, email, message, source, status, created_at")
+        .single()
+    : await supabase
+        .from("inquiries")
+        .insert({
+          full_name: payload.name,
+          phone: payload.contact,
+          email: payload.contact,
+          message: fullMessage,
+          source: mapInquiryChannelToSource(payload.channel),
+          status: mapAdminInquiryStatusToDatabase(payload.status)
+        })
+        .select("id, full_name, phone, email, message, source, status, created_at")
+        .single();
+
+  if (inquiryResult.error || !inquiryResult.data) {
+    throw inquiryResult.error ?? new Error("No pudimos guardar la consulta.");
+  }
+
+  const parsedMessage = parseInquiryMessageContent(inquiryResult.data.message);
+
+  return {
+    id: inquiryResult.data.id,
+    createdAt: inquiryResult.data.created_at,
+    name: inquiryResult.data.full_name,
+    contact: inquiryResult.data.phone || inquiryResult.data.email,
+    channel: mapSourceToInquiryChannel(inquiryResult.data.source),
+    subject: parsedMessage.subject,
+    message: parsedMessage.message,
+    status: mapInquiryStatusToAdmin(inquiryResult.data.status)
+  } satisfies AdminState["inquiries"][number];
+}
+
+export async function removeAdminInquiry(id: string) {
+  const supabase = createSupabaseServiceClient();
+  const { error } = await supabase.from("inquiries").delete().eq("id", id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function upsertAdminPriceSeason(payload: {
+  id?: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  prices: Record<string, number>;
+}) {
+  const supabase = createSupabaseServiceClient();
+  const seasonResult = payload.id
+    ? await supabase
+        .from("price_seasons")
+        .update({
+          name: payload.name,
+          start_date: payload.startDate,
+          end_date: payload.endDate,
+          prices_json: payload.prices
+        })
+        .eq("id", payload.id)
+        .select("id, name, start_date, end_date, prices_json")
+        .single()
+    : await supabase
+        .from("price_seasons")
+        .insert({
+          name: payload.name,
+          start_date: payload.startDate,
+          end_date: payload.endDate,
+          prices_json: payload.prices
+        })
+        .select("id, name, start_date, end_date, prices_json")
+        .single();
+
+  if (seasonResult.error || !seasonResult.data) {
+    throw seasonResult.error ?? new Error("No pudimos guardar la temporada.");
+  }
+
+  return {
+    id: seasonResult.data.id,
+    name: seasonResult.data.name,
+    startDate: seasonResult.data.start_date,
+    endDate: seasonResult.data.end_date,
+    prices: (seasonResult.data.prices_json ?? {}) as Record<string, number>
+  } satisfies AdminState["priceSeasons"][number];
+}
+
+export async function removeAdminPriceSeason(id: string) {
+  const supabase = createSupabaseServiceClient();
+  const { error } = await supabase.from("price_seasons").delete().eq("id", id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+export async function upsertAdminUser(payload: {
+  id?: string;
+  name: string;
+  email: string;
+  role: AdminUser["role"];
+  status: AdminUser["status"];
+  password?: string;
+}) {
+  const supabase = createSupabaseServiceClient();
+  const role = mapAdminRoleToDatabase(payload.role);
+
+  if (payload.id) {
+    const authUpdatePayload: { email: string; password?: string } = {
+      email: payload.email
+    };
+
+    if (payload.password?.trim()) {
+      authUpdatePayload.password = payload.password.trim();
+    }
+
+    const { error: authUpdateError } = await supabase.auth.admin.updateUserById(payload.id, authUpdatePayload);
+
+    if (authUpdateError) {
+      throw authUpdateError;
+    }
+
+    const data = await updateAdminProfileRecord({
+      id: payload.id,
+      email: payload.email,
+      fullName: payload.name,
+      role,
+      status: payload.status
+    });
+
+    return {
+      id: data.id,
+      name: data.full_name ?? "Usuario",
+      email: data.email,
+      role: mapDatabaseRoleToAdmin(data.role),
+      status: data.status as AdminUser["status"],
+      lastAccess: data.created_at
+    } satisfies AdminState["users"][number];
+  }
+
+  if (!payload.password?.trim()) {
+    throw new Error("Debes definir una contrasena para crear el usuario.");
+  }
+
+  const { data: authUserResult, error: createAuthUserError } = await supabase.auth.admin.createUser({
+    email: payload.email,
+    password: payload.password.trim(),
+    email_confirm: true,
+    user_metadata: {
+      full_name: payload.name
+    }
+  });
+
+  if (createAuthUserError || !authUserResult.user) {
+    throw createAuthUserError ?? new Error("No pudimos crear el usuario en autenticacion.");
+  }
+
+  const data = await updateAdminProfileRecord({
+    id: authUserResult.user.id,
+    email: payload.email,
+    fullName: payload.name,
+    role,
+    status: payload.status
+  });
+
+  return {
+    id: data.id,
+    name: data.full_name ?? "Usuario",
+    email: data.email,
+    role: mapDatabaseRoleToAdmin(data.role),
+    status: data.status as AdminUser["status"],
+    lastAccess: data.created_at
+  } satisfies AdminState["users"][number];
+}
+
+export async function removeAdminUser(id: string) {
+  const supabase = createSupabaseServiceClient();
+  const { error } = await supabase.auth.admin.deleteUser(id);
+
+  if (error) {
+    throw error;
+  }
+}
+
 export async function createGalleryItems(payload: {
   title: string;
   category: string;
@@ -2836,11 +3503,24 @@ export async function upsertUnit(payload: {
   id?: string;
   name: string;
   capacity: number;
+  bedrooms: number;
   beds: string;
-  price: number;
+  bathrooms: number;
+  cleaningFee: number;
   status: "active" | "maintenance" | "draft";
+  shortDescription: string;
   description: string;
+  amenities: string[];
+  highlights: string[];
+  details: UnitDetailItem[];
+  adultPriceRates: Array<{
+    id?: string;
+    adults: number;
+    pricePerNight: number;
+    active: boolean;
+  }>;
   uploads?: Array<{ url: string; path: string; fileName: string }>;
+  removedImageIds?: string[];
 }) {
   const supabase = createSupabaseServiceClient();
   const slug = payload.name
@@ -2850,6 +3530,43 @@ export async function upsertUnit(payload: {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
   const active = payload.status === "active";
+  const shortDescription = payload.shortDescription.trim() || payload.description.trim() || payload.name.trim();
+  const details = normalizeUnitDetails(payload.details);
+  const highlights = normalizeStringList(payload.highlights);
+  const amenityNames = normalizeStringList(payload.amenities);
+  const normalizedAdultPriceRates = payload.adultPriceRates
+    .map((rate) => ({
+      id: rate.id,
+      adults: Number(rate.adults),
+      pricePerNight: parseSupabaseNumber(rate.pricePerNight),
+      active: Boolean(rate.active)
+    }))
+    .filter((rate) => Number.isInteger(rate.adults) && rate.adults > 0);
+  const activeAdultPriceRates = normalizedAdultPriceRates.filter((rate) => rate.active);
+  const duplicatedAdults = activeAdultPriceRates
+    .map((rate) => rate.adults)
+    .find((adults, index, list) => list.indexOf(adults) !== index);
+
+  if (!normalizedAdultPriceRates.length) {
+    throw new Error("Debes configurar al menos una tarifa por cantidad de adultos.");
+  }
+
+  if (duplicatedAdults) {
+    throw new Error("No puede haber dos tarifas activas para la misma cantidad de adultos.");
+  }
+
+  if (normalizedAdultPriceRates.some((rate) => rate.adults > payload.capacity)) {
+    throw new Error("No puedes guardar tarifas para una cantidad de adultos mayor a la capacidad maxima.");
+  }
+
+  if (normalizedAdultPriceRates.some((rate) => rate.pricePerNight < 0 || Number.isNaN(rate.pricePerNight))) {
+    throw new Error("Cada tarifa debe tener un precio por noche valido.");
+  }
+
+  const fromPricePerNight =
+    activeAdultPriceRates.sort((left, right) => left.adults - right.adults)[0]?.pricePerNight ??
+    normalizedAdultPriceRates[0]?.pricePerNight ??
+    0;
 
   const unitResult = payload.id
     ? await supabase
@@ -2857,14 +3574,19 @@ export async function upsertUnit(payload: {
         .update({
           name: payload.name,
           slug,
-          short_description: payload.description,
+          short_description: shortDescription,
           description: payload.description,
           max_guests: payload.capacity,
+          bedrooms: payload.bedrooms,
           beds: payload.beds,
-          base_price_per_night: payload.price,
+          bathrooms: payload.bathrooms,
+          base_price_per_night: fromPricePerNight,
+          cleaning_fee: payload.cleaningFee,
+          highlights_json: highlights,
+          details_json: details,
           active
         })
-        .eq("id", payload.id)
+        .eq("id", payload.id!)
         .select("id, name, max_guests, beds, base_price_per_night, short_description, active")
         .single()
     : await supabase
@@ -2872,14 +3594,16 @@ export async function upsertUnit(payload: {
         .insert({
           name: payload.name,
           slug,
-          short_description: payload.description,
+          short_description: shortDescription,
           description: payload.description,
           max_guests: payload.capacity,
-          bedrooms: 1,
+          bedrooms: payload.bedrooms,
           beds: payload.beds,
-          bathrooms: 1,
-          base_price_per_night: payload.price,
-          cleaning_fee: 0,
+          bathrooms: payload.bathrooms,
+          base_price_per_night: fromPricePerNight,
+          cleaning_fee: payload.cleaningFee,
+          highlights_json: highlights,
+          details_json: details,
           active
         })
         .select("id, name, max_guests, beds, base_price_per_night, short_description, active")
@@ -2912,7 +3636,7 @@ export async function upsertUnit(payload: {
       description: `Tarifa base para ${payload.name}.`,
       currency: "ARS",
       pricing_mode: "per_night",
-      base_price_per_night: payload.price,
+      base_price_per_night: fromPricePerNight,
       is_default: true,
       active
     }, { onConflict: "unit_id,code" });
@@ -2921,19 +3645,136 @@ export async function upsertUnit(payload: {
     throw ratePlanSyncError;
   }
 
+  const { data: existingAdultRateRows, error: existingAdultRateRowsError } = await supabase
+    .from("adult_price_rates")
+    .select("id")
+    .eq("unit_id", unitResult.data.id);
+
+  if (existingAdultRateRowsError) {
+    throw existingAdultRateRowsError;
+  }
+
+  const incomingRateIds = normalizedAdultPriceRates
+    .map((rate) => rate.id)
+    .filter((value): value is string => Boolean(value));
+  const removableRateIds = (existingAdultRateRows ?? [])
+    .map((rate) => rate.id)
+    .filter((id) => !incomingRateIds.includes(id));
+
+  if (removableRateIds.length) {
+    const { error: removeRatesError } = await supabase
+      .from("adult_price_rates")
+      .delete()
+      .eq("unit_id", unitResult.data.id)
+      .in("id", removableRateIds);
+
+    if (removeRatesError) {
+      throw removeRatesError;
+    }
+  }
+
+  const { error: upsertAdultRatesError } = await supabase
+    .from("adult_price_rates")
+    .upsert(
+      normalizedAdultPriceRates.map((rate) => ({
+        ...(rate.id ? { id: rate.id } : {}),
+        unit_id: unitResult.data.id,
+        adults: rate.adults,
+        price_per_night: rate.pricePerNight,
+        active: rate.active
+      })),
+      { onConflict: "unit_id,adults" }
+    );
+
+  if (upsertAdultRatesError) {
+    throw upsertAdultRatesError;
+  }
+
+  if (payload.removedImageIds?.length) {
+    const { data: imagesToRemove, error: imagesToRemoveError } = await supabase
+      .from("unit_images")
+      .select("id, storage_path")
+      .eq("unit_id", unitResult.data.id)
+      .in("id", payload.removedImageIds);
+
+    if (imagesToRemoveError) {
+      throw imagesToRemoveError;
+    }
+
+    const { error: deleteImagesError } = await supabase
+      .from("unit_images")
+      .delete()
+      .eq("unit_id", unitResult.data.id)
+      .in("id", payload.removedImageIds);
+
+    if (deleteImagesError) {
+      throw deleteImagesError;
+    }
+
+    await removeStorageObjects((imagesToRemove ?? []).map((image) => image.storage_path).filter(Boolean));
+  }
+
   if (payload.uploads?.length) {
+    const { data: currentImages, error: currentImagesError } = await supabase
+      .from("unit_images")
+      .select("id")
+      .eq("unit_id", unitResult.data.id)
+      .order("sort_order", { ascending: true });
+
+    if (currentImagesError) {
+      throw currentImagesError;
+    }
+
+    const startOrder = currentImages?.length ?? 0;
     const imageRows = payload.uploads.map((upload, index) => ({
       unit_id: unitResult.data.id,
       image_url: upload.url,
       storage_path: upload.path,
       alt_text: payload.name,
-      sort_order: index + 1
+      sort_order: startOrder + index + 1
     }));
 
     const { error: imageError } = await supabase.from("unit_images").insert(imageRows);
 
     if (imageError) {
       throw imageError;
+    }
+  }
+
+  await supabase.from("unit_amenities").delete().eq("unit_id", unitResult.data.id);
+
+  if (amenityNames.length) {
+    const { error: amenityUpsertError } = await supabase.from("amenities").upsert(
+      amenityNames.map((name) => ({
+        name
+      })),
+      { onConflict: "name" }
+    );
+
+    if (amenityUpsertError) {
+      throw amenityUpsertError;
+    }
+
+    const { data: amenityRows, error: amenityFetchError } = await supabase
+      .from("amenities")
+      .select("id")
+      .in("name", amenityNames);
+
+    if (amenityFetchError) {
+      throw amenityFetchError;
+    }
+
+    if (amenityRows?.length) {
+      const { error: unitAmenitiesError } = await supabase.from("unit_amenities").insert(
+        amenityRows.map((amenity) => ({
+          unit_id: unitResult.data.id,
+          amenity_id: amenity.id
+        }))
+      );
+
+      if (unitAmenitiesError) {
+        throw unitAmenitiesError;
+      }
     }
   }
 
@@ -2948,8 +3789,12 @@ export async function upsertUnit(payload: {
     id: unit.id,
     name: unit.name,
     capacity: unit.maxGuests,
+    bedrooms: unit.bedrooms,
     beds: unit.beds,
-    price: unit.basePricePerNight,
+    bathrooms: unit.bathrooms,
+    price: unit.fromPricePerNight,
+    fromPricePerNight: unit.fromPricePerNight,
+    cleaningFee: unit.cleaningFee,
     image: unit.featuredImage,
     images: unit.images.map((image) => ({
       id: image.id,
@@ -2959,7 +3804,17 @@ export async function upsertUnit(payload: {
       storagePath: image.storagePath
     })),
     status: deriveReservationStatus(payload.status),
-    description: unit.shortDescription
+    shortDescription: unit.shortDescription,
+    description: unit.description,
+    amenities: unit.amenities.map((amenity) => amenity.name),
+    highlights: unit.highlights,
+    details: unit.details,
+    adultPriceRates: unit.adultPriceRates.map((rate) => ({
+      id: rate.id,
+      adults: rate.adults,
+      pricePerNight: rate.pricePerNight,
+      active: rate.active
+    }))
   } satisfies AdminState["units"][number];
 }
 
@@ -2984,11 +3839,16 @@ export async function removeUnit(id: string) {
 }
 
 export async function updateAdminContent(payload: {
+  heroEyebrow: string;
   heroTitle: string;
   heroSubtitle: string;
   heroImage?: string;
+  heroTrustPoints: string[];
   aboutTitle: string;
   aboutBody: string;
+  testimonialsTitle: string;
+  locationTitle: string;
+  policiesTitle: string;
   faqs: Array<{ id: string; question: string; answer: string }>;
   policies: Array<{ id: string; title: string; body: string }>;
 }) {
@@ -3006,6 +3866,22 @@ export async function updateAdminContent(payload: {
 
   if (heroError) {
     throw heroError;
+  }
+
+  const { error: heroOverrideError } = await supabase.from("pages_content").upsert({
+    page: "home",
+    section: "hero",
+    content_json: {
+      eyebrow: payload.heroEyebrow,
+      title: payload.heroTitle,
+      subtitle: payload.heroSubtitle,
+      image: payload.heroImage,
+      trustPoints: payload.heroTrustPoints
+    }
+  }, { onConflict: "page,section" });
+
+  if (heroOverrideError) {
+    throw heroOverrideError;
   }
 
   const { error: aboutError } = await supabase.from("pages_content").upsert({
@@ -3033,6 +3909,42 @@ export async function updateAdminContent(payload: {
     throw policiesError;
   }
 
+  const [policiesMetaResult, testimonialsResult, locationResult, faqsSectionResult] = await Promise.all([
+    supabase.from("pages_content").upsert({
+      page: "home",
+      section: "policies",
+      content_json: {
+        title: payload.policiesTitle,
+        items: payload.policies.map(({ title, body }) => ({ title, body }))
+      }
+    }, { onConflict: "page,section" }),
+    supabase.from("pages_content").upsert({
+      page: "home",
+      section: "testimonials",
+      content_json: {
+        title: payload.testimonialsTitle
+      }
+    }, { onConflict: "page,section" }),
+    supabase.from("pages_content").upsert({
+      page: "home",
+      section: "location",
+      content_json: {
+        title: payload.locationTitle
+      }
+    }, { onConflict: "page,section" }),
+    supabase.from("pages_content").upsert({
+      page: "home",
+      section: "faqs",
+      content_json: {
+        items: payload.faqs.map(({ id, question, answer }) => ({ id, question, answer }))
+      }
+    }, { onConflict: "page,section" })
+  ]);
+
+  if (policiesMetaResult.error || testimonialsResult.error || locationResult.error || faqsSectionResult.error) {
+    throw policiesMetaResult.error ?? testimonialsResult.error ?? locationResult.error ?? faqsSectionResult.error;
+  }
+
   await supabase.from("faqs").delete().neq("id", "00000000-0000-0000-0000-000000000000");
   const faqRows = payload.faqs.map((faq, index) => ({
     question: faq.question,
@@ -3050,35 +3962,49 @@ export async function updateAdminContent(payload: {
 
 export async function updateAdminSettings(payload: {
   propertyName: string;
+  whatsappNumber: string;
   contactEmail: string;
   phone: string;
+  instagramUrl: string;
+  facebookUrl: string;
+  googleReviewsUrl: string;
+  googleMapsUrl: string;
   currency: string;
   timezone: string;
   checkInTime: string;
   checkOutTime: string;
+  depositPercentage: number;
   address: string;
+  city: string;
+  region: string;
 }) {
   const supabase = createSupabaseServiceClient();
-  const settings = await fetchSiteSettings();
   const { error } = await supabase.from("site_settings").upsert([
     {
       key: "contact",
       value_json: {
-        whatsappNumber: settings.whatsappNumber,
+        whatsappNumber: payload.whatsappNumber,
         phone: payload.phone,
         email: payload.contactEmail,
-        instagramUrl: settings.instagramUrl,
-        facebookUrl: settings.facebookUrl
+        instagramUrl: payload.instagramUrl,
+        facebookUrl: payload.facebookUrl
       }
     },
     {
       key: "location",
       value_json: {
         address: payload.address,
-        city: settings.city,
-        region: settings.region,
-        coordinates: settings.coordinates,
-        googleMapsUrl: settings.googleMapsUrl
+        city: payload.city,
+        region: payload.region,
+        coordinates: EMPTY_SITE_SETTINGS.coordinates,
+        googleMapsUrl: payload.googleMapsUrl
+      }
+    },
+    {
+      key: "reviews",
+      value_json: {
+        googleReviewsUrl: payload.googleReviewsUrl,
+        googleMapsUrl: payload.googleMapsUrl
       }
     },
     {
@@ -3088,7 +4014,8 @@ export async function updateAdminSettings(payload: {
         currency: payload.currency,
         timezone: payload.timezone,
         checkInTime: payload.checkInTime,
-        checkOutTime: payload.checkOutTime
+        checkOutTime: payload.checkOutTime,
+        depositPercentage: payload.depositPercentage
       }
     }
   ], { onConflict: "key" });
@@ -3099,14 +4026,7 @@ export async function updateAdminSettings(payload: {
 }
 
 export async function getGoogleHotelCenterFeedData() {
-  if (canUseMockData()) {
-    return {
-      siteSettings: mockSiteSettings,
-      units: mockUnits.filter((unit) => unit.active),
-      ratePlans: [] as RatePlan[],
-      inventory: [] as InventoryRecord[]
-    };
-  }
+  assertRealDataMode("Google Hotel Center");
 
   const [siteSettings, units, ratePlans, inventory] = await Promise.all([
     fetchSiteSettings(),
@@ -3139,7 +4059,7 @@ export async function syncMercadoPagoPayment(params: {
   const supabase = createSupabaseServiceClient();
   const { data: paymentRow, error: paymentLookupError } = await supabase
     .from("payments")
-    .select("id, reservation_id")
+    .select("id, reservation_id, status, checkout_url")
     .or(
       [
         params.externalReference ? `external_reference.eq.${params.externalReference}` : null,
@@ -3225,4 +4145,17 @@ export async function syncMercadoPagoPayment(params: {
     provider_payment_id: params.providerPaymentId,
     payload: params.rawPayload
   });
+
+  if (paymentRow.status !== nextPaymentStatus) {
+    try {
+      await notifyReservationStatusUpdate(
+        paymentRow.reservation_id,
+        nextPaymentStatus,
+        paymentRow.checkout_url ?? null
+      );
+    } catch (error) {
+      console.error("[reservation-status-email]", error);
+    }
+  }
 }
+

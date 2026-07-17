@@ -3,7 +3,9 @@ import type { Metadata } from "next";
 const siteUrl = "https://losalamostilcara.com";
 const title = "Los Álamos Tilcara | Hospedaje en Tilcara, Jujuy";
 const description =
-  "Hospedaje cálido en Tilcara, Jujuy. Consultá disponibilidad, enviá tu solicitud de reserva y organizá tu estadía en la Quebrada de Humahuaca.";
+  "Hospedaje en Tilcara, Jujuy. Conocé nuestros alojamientos, servicios y ubicación. Consultá disponibilidad y organizá tu estadía directamente con Los Álamos.";
+const openGraphDescription =
+  "Conocé nuestros alojamientos en Tilcara y consultá disponibilidad directamente con nosotros.";
 
 export function buildMetadata(overrides?: Partial<Metadata>): Metadata {
   return {
@@ -14,8 +16,8 @@ export function buildMetadata(overrides?: Partial<Metadata>): Metadata {
       canonical: "/"
     },
     openGraph: {
-      title,
-      description,
+      title: "Los Álamos Tilcara | Descansá en la Quebrada",
+      description: openGraphDescription,
       url: siteUrl,
       siteName: "Los Álamos Tilcara",
       locale: "es_AR",

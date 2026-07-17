@@ -6,8 +6,10 @@ import { useForm } from "react-hook-form";
 import { Search } from "lucide-react";
 import { z } from "zod";
 
+import { useAppFeedback } from "@/components/feedback/app-feedback-provider";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { Input } from "@/components/ui/input";
 import { availabilitySearchSchema } from "@/lib/validations/reservation";
 import { formatCurrency } from "@/lib/utils/format";
@@ -16,12 +18,13 @@ import type { Unit } from "@/types/domain";
 type FormValues = z.infer<typeof availabilitySearchSchema>;
 
 interface AvailabilityResult {
-  units: Array<Pick<Unit, "id" | "name" | "shortDescription" | "basePricePerNight">>;
+  units: Array<Pick<Unit, "id" | "name" | "shortDescription" | "fromPricePerNight">>;
 }
 
 export function AvailabilitySearchForm({ units }: { units: Unit[] }) {
+  const { runBlockingAction } = useAppFeedback();
   const [results, setResults] = useState<AvailabilityResult | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
 
   const defaultUnitId = useMemo(() => units[0]?.id ?? "", [units]);
 
@@ -32,30 +35,63 @@ export function AvailabilitySearchForm({ units }: { units: Unit[] }) {
       unitId: defaultUnitId
     }
   });
+  const watchedCheckIn = form.watch("checkIn");
+  const watchedCheckOut = form.watch("checkOut");
 
   async function onSubmit(values: FormValues) {
-    setIsLoading(true);
-    const response = await fetch("/api/availability", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(values)
-    });
-    const data = (await response.json()) as AvailabilityResult;
-    setResults(data);
-    setIsLoading(false);
+    setRequestError(null);
+
+    try {
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/availability", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values)
+          });
+          const payload = (await response.json().catch(() => null)) as
+            | (AvailabilityResult & { error?: string })
+            | null;
+
+          if (!response.ok || !payload) {
+            throw new Error(payload?.error ?? "No pudimos consultar disponibilidad.");
+          }
+
+          return payload;
+        },
+        {
+          loadingMessage: "Estamos consultando la disponibilidad.",
+          successMessage: (payload) =>
+            payload.units.length
+              ? "La disponibilidad se actualizo correctamente."
+              : "No encontramos unidades para ese rango, pero la consulta se proceso."
+        }
+      );
+
+      setResults(data);
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "No pudimos consultar disponibilidad."
+      );
+    }
   }
 
   return (
     <Card className="p-6">
       <form className="grid gap-4 md:grid-cols-5" onSubmit={form.handleSubmit(onSubmit)}>
-        <label className="text-sm text-sand-700">
-          Check-in
-          <Input type="date" {...form.register("checkIn")} />
-        </label>
-        <label className="text-sm text-sand-700">
-          Check-out
-          <Input type="date" {...form.register("checkOut")} />
-        </label>
+        <div className="md:col-span-2">
+          <DateRangePicker
+            checkIn={watchedCheckIn}
+            checkOut={watchedCheckOut}
+            monthsToShow={1}
+            onChange={({ checkIn, checkOut }) => {
+              form.setValue("checkIn", checkIn, { shouldDirty: true, shouldValidate: true });
+              form.setValue("checkOut", checkOut, { shouldDirty: true, shouldValidate: true });
+            }}
+          />
+        </div>
         <label className="text-sm text-sand-700">
           Hu\u00E9spedes
           <Input min={1} type="number" {...form.register("guests")} />
@@ -77,13 +113,14 @@ export function AvailabilitySearchForm({ units }: { units: Unit[] }) {
         <div className="flex items-end">
           <Button className="w-full gap-2" type="submit">
             <Search className="h-4 w-4" />
-            {isLoading ? "Buscando..." : "Buscar"}
+            Buscar
           </Button>
         </div>
       </form>
       {form.formState.errors.checkOut ? (
         <p className="mt-3 text-sm text-red-600">{form.formState.errors.checkOut.message}</p>
       ) : null}
+      {requestError ? <p className="mt-3 text-sm text-red-600">{requestError}</p> : null}
       {results ? (
         <div className="mt-6 grid gap-4">
           {results.units.length ? (
@@ -97,7 +134,7 @@ export function AvailabilitySearchForm({ units }: { units: Unit[] }) {
                   <p className="text-sm text-sand-700">{unit.shortDescription}</p>
                 </div>
                 <p className="text-sm font-semibold text-clay">
-                  Desde {formatCurrency(unit.basePricePerNight)} / noche
+                  Desde {formatCurrency(unit.fromPricePerNight)} / noche
                 </p>
               </div>
             ))

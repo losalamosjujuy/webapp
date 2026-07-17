@@ -1,10 +1,10 @@
 import Link from "next/link";
 
-import { siteSettings } from "@/data/mock-data";
+import type { SiteSettings } from "@/types/domain";
 
 import { Container } from "./container";
 
-export function SiteFooter() {
+export function SiteFooter({ siteSettings }: { siteSettings: SiteSettings }) {
   return (
     <footer className="border-t border-sand-200 bg-white py-12">
       <Container className="grid gap-8 md:grid-cols-3">

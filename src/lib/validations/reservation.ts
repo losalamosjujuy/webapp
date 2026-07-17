@@ -1,15 +1,24 @@
 import { z } from "zod";
 
+function todayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 const reservationDatesFields = {
   checkIn: z.string().min(1),
   checkOut: z.string().min(1)
 };
 
 function withValidDateRange<T extends z.ZodRawShape>(shape: T) {
-  return z.object(shape).refine((data) => data.checkIn < data.checkOut, {
-    message: "La fecha de salida debe ser posterior al check-in.",
-    path: ["checkOut"]
-  });
+  return z.object(shape)
+    .refine((data) => String(data.checkIn) >= todayIsoDate(), {
+      message: "No se pueden seleccionar fechas anteriores a hoy.",
+      path: ["checkIn"]
+    })
+    .refine((data) => String(data.checkIn) < String(data.checkOut), {
+      message: "La fecha de salida debe ser posterior al check-in.",
+      path: ["checkOut"]
+    });
 }
 
 export const availabilitySearchSchema = withValidDateRange({
@@ -26,7 +35,7 @@ export const reservationRequestSchema = withValidDateRange({
   city: z.string().optional(),
   country: z.string().optional(),
   adults: z.coerce.number().int().min(1).max(10),
-  children: z.coerce.number().int().min(0).max(10).default(0),
+  children: z.coerce.number().int().min(0).max(0, "Por el momento no aceptamos ninos en reservas web.").default(0),
   unitId: z.string().optional(),
   specialNotes: z.string().max(600).optional(),
   estimatedArrivalTime: z.string().optional()

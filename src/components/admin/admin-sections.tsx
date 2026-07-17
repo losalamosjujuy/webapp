@@ -5,10 +5,15 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   addMonths,
+  addDays,
+  differenceInCalendarDays,
   eachDayOfInterval,
   endOfMonth,
   format,
   isSameMonth,
+  isToday,
+  isWeekend,
+  parseISO,
   startOfMonth,
   subMonths
 } from "date-fns";
@@ -34,8 +39,10 @@ import {
   Users
 } from "lucide-react";
 
+import { ActionConfirmationDialog } from "@/components/admin/action-confirmation-dialog";
 import { useAdmin } from "@/components/admin/admin-provider";
 import { AdminShell } from "@/components/admin/admin-shell";
+import { useAppFeedback } from "@/components/feedback/app-feedback-provider";
 import { propertyImages } from "@/data/property-images";
 import { cn } from "@/lib/utils/cn";
 import { formatCurrency, formatDate } from "@/lib/utils/format";
@@ -59,6 +66,33 @@ import type {
 
 function createId(prefix: string) {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+interface ConfirmationConfig {
+  cancelLabel?: string;
+  confirmLabel?: string;
+  description: string;
+  intent?: "default" | "danger";
+  onConfirm: () => void;
+  title: string;
+}
+
+function useActionConfirmation() {
+  const [confirmation, setConfirmation] = useState<ConfirmationConfig | null>(null);
+
+  return {
+    confirmation,
+    askForConfirmation(config: ConfirmationConfig) {
+      setConfirmation(config);
+    },
+    closeConfirmation() {
+      setConfirmation(null);
+    },
+    confirmAction() {
+      confirmation?.onConfirm();
+      setConfirmation(null);
+    }
+  };
 }
 
 async function uploadAdminFiles({
@@ -105,6 +139,36 @@ function nightsBetween(checkIn: string, checkOut: string) {
 
 function overlaps(date: string, startDate: string, endDate: string) {
   return date >= startDate && date < endDate;
+}
+
+function parseTextList(value: FormDataEntryValue | null) {
+  return (value?.toString() ?? "")
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function formatTextList(items: string[]) {
+  return items.join("\n");
+}
+
+function parseDetailList(value: FormDataEntryValue | null) {
+  return (value?.toString() ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [label, ...rest] = line.split(":");
+      return {
+        label: label?.trim() ?? "",
+        value: rest.join(":").trim()
+      };
+    })
+    .filter((item) => item.label && item.value);
+}
+
+function formatDetailList(items: Array<{ label: string; value: string }>) {
+  return items.map((item) => `${item.label}: ${item.value}`).join("\n");
 }
 
 function statusTone(status: string) {
@@ -225,6 +289,337 @@ function OccupancyGrid({
   onMonthChange?: (next: Date) => void;
 }) {
   const { state } = useAdmin();
+  const planningMonthStart = startOfMonth(month);
+  const planningMonthEnd = endOfMonth(month);
+  const planningViewStart = planningMonthStart;
+  const planningViewEnd = planningMonthEnd;
+  const planningDates = eachDayOfInterval({ start: planningViewStart, end: planningViewEnd });
+  const planningGridColumns = `260px repeat(${planningDates.length}, minmax(56px, 1fr))`;
+  const planningViewStartIso = format(planningViewStart, "yyyy-MM-dd");
+  const planningViewEndExclusive = addDays(planningViewEnd, 1);
+  const planningViewEndExclusiveIso = format(planningViewEndExclusive, "yyyy-MM-dd");
+  const planningActiveReservations = state.reservations.filter(
+    (reservation) =>
+      !["canceled", "rejected", "expired_hold", "expired_verification"].includes(reservation.status) &&
+      reservation.checkIn < planningViewEndExclusiveIso &&
+      reservation.checkOut > planningViewStartIso
+  );
+  const planningUpcomingReservations = [...planningActiveReservations]
+    .sort((left, right) => left.checkIn.localeCompare(right.checkIn))
+    .slice(0, 5);
+  const planningOccupiedToday = state.units.filter((unit) =>
+    planningActiveReservations.some(
+      (reservation) =>
+        reservation.accommodationId === unit.id &&
+        ["confirmed", "completed", "no_show", "pending_payment", "verified_pending_payment", "pending"].includes(
+          reservation.status
+        ) &&
+        overlaps(format(new Date(), "yyyy-MM-dd"), reservation.checkIn, reservation.checkOut)
+    )
+  ).length;
+  const planningMonthArrivals = planningActiveReservations.filter((reservation) => {
+    const checkIn = parseISO(reservation.checkIn);
+    return checkIn >= planningMonthStart && checkIn <= planningMonthEnd;
+  }).length;
+  const planningMonthDepartures = planningActiveReservations.filter((reservation) => {
+    const checkOut = parseISO(reservation.checkOut);
+    return checkOut >= planningMonthStart && checkOut <= planningMonthEnd;
+  }).length;
+  const planningPendingReview = planningActiveReservations.filter((reservation) =>
+    ["pending", "pending_payment", "verified_pending_payment", "pending_verification"].includes(reservation.status)
+  ).length;
+
+  function planningReservationTone(status: AdminReservationStatus) {
+    switch (status) {
+      case "confirmed":
+      case "completed":
+      case "no_show":
+        return "border-[#2d7f86] bg-[linear-gradient(90deg,#34a0a9_0%,#2b93a1_100%)] text-white";
+      case "pending_payment":
+      case "verified_pending_payment":
+        return "border-[#ca9741] bg-[linear-gradient(90deg,#f5c35b_0%,#e5b349_100%)] text-[#4a2f0b]";
+      case "pending_verification":
+      case "pending":
+        return "border-[#cf6b4a] bg-[linear-gradient(90deg,#f49a7d_0%,#e87d5e_100%)] text-white";
+      default:
+        return "border-[#8da47a] bg-[linear-gradient(90deg,#8ecf7f_0%,#70ba63_100%)] text-[#17371c]";
+    }
+  }
+
+  function planningReservationLabel(status: AdminReservationStatus) {
+    if (status === "pending_payment" || status === "verified_pending_payment") {
+      return "Pago pendiente";
+    }
+
+    if (status === "pending_verification" || status === "pending") {
+      return "Pendiente";
+    }
+
+    if (status === "no_show") {
+      return "No show";
+    }
+
+    if (status === "completed") {
+      return "Completada";
+    }
+
+    return "Confirmada";
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[26px] border border-[#eadccf] bg-white shadow-[0_18px_50px_rgba(71,45,24,0.06)]">
+      <div className="border-b border-[#efe3d8] px-6 py-5">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="inline-flex h-9 items-center rounded-full border border-[#eadccf] bg-[#fff9f3] px-4 text-xs font-semibold uppercase tracking-[0.18em] text-[#8d5a30]">
+                Planning de reservas
+              </span>
+              <div className="rounded-full border border-[#eadccf] bg-white px-4 py-2 text-sm font-semibold text-[#6d3d18]">
+                {format(month, "MMMM yyyy")}
+              </div>
+            </div>
+            <h3 className="mt-4 text-xl font-semibold text-[#241b16]">Calendario de ocupacion por alojamiento</h3>
+            <p className="mt-2 max-w-3xl text-sm text-[#6b5a4d]">
+              Cada fila representa un alojamiento. Las barras muestran huesped, origen, cantidad de personas y rango
+              de estadia para revisar rapido quien llega, quien sigue alojado y que unidades quedan bloqueadas.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-5 text-xs text-[#6b5a4d]">
+              <LegendDot color="bg-[#2f98a3]" label="Confirmada / alojado" />
+              <LegendDot color="bg-[#efbc52]" label="Pago pendiente" />
+              <LegendDot color="bg-[#eb8768]" label="Pendiente" />
+              <LegendDot color="bg-[#dcdcdc]" label="Bloqueo manual" />
+              <LegendDot color="bg-[#f5efe8]" label="Fin de semana" />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 self-start">
+            {onMonthChange ? (
+              <>
+                <button
+                  onClick={() => onMonthChange?.(subMonths(month, 1))}
+                  className="rounded-xl border border-[#eadccf] bg-white p-3"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => onMonthChange?.(addMonths(month, 1))}
+                  className="rounded-xl border border-[#eadccf] bg-white p-3"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </>
+            ) : null}
+            <Link
+              href="/admin/calendar"
+              className="inline-flex h-11 items-center justify-center rounded-xl border border-[#cfae92] px-5 text-sm font-semibold text-[#7d4d27]"
+            >
+              Ver calendario completo
+            </Link>
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {[
+            { label: "Unidades ocupadas hoy", value: `${planningOccupiedToday}/${state.units.length}`, helper: "Con reservas activas" },
+            { label: "Entradas del mes", value: planningMonthArrivals, helper: "Check-ins visibles" },
+            { label: "Salidas del mes", value: planningMonthDepartures, helper: "Check-outs visibles" },
+            { label: "Pendientes a revisar", value: planningPendingReview, helper: "Sin cerrar operativamente" }
+          ].map((item) => (
+            <div key={item.label} className="rounded-2xl border border-[#f0e5db] bg-[#fffaf5] px-4 py-4">
+              <p className="text-xs uppercase tracking-[0.16em] text-[#9a7b63]">{item.label}</p>
+              <p className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[#241b16]">{item.value}</p>
+              <p className="mt-1 text-sm text-[#7a6759]">{item.helper}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid gap-0 xl:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="overflow-x-auto border-r border-[#efe3d8]">
+          <div className="min-w-[1700px] px-6 py-6">
+            <div className="grid" style={{ gridTemplateColumns: planningGridColumns }}>
+              <div className="sticky left-0 z-20 flex items-end border-b border-[#efe3d8] bg-white px-4 pb-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.18em] text-[#9a7b63]">Alojamiento</p>
+                  <p className="mt-1 text-sm text-[#6b5a4d]">Del 1 al ultimo dia del mes</p>
+                </div>
+              </div>
+              {planningDates.map((date) => (
+                <div
+                  key={date.toISOString()}
+                  className={cn(
+                    "border-b border-l border-[#efe7df] px-2 pb-4 pt-1 text-center",
+                    !isSameMonth(date, month) && "bg-[#faf6f1] text-[#b5a394]",
+                    isWeekend(date) && isSameMonth(date, month) && "bg-[#fcf5ec]",
+                    isToday(date) && "bg-[#fff1da]"
+                  )}
+                >
+                  <p className="text-[11px] uppercase tracking-[0.14em] text-[#8c7767]">{format(date, "EE")}</p>
+                  <p className="mt-1 text-base font-semibold text-[#2c211a]">{format(date, "d")}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="divide-y divide-[#f1e8df]">
+              {state.units.map((unit) => {
+                const reservations = planningActiveReservations
+                  .filter((reservation) => reservation.accommodationId === unit.id)
+                  .map((reservation) => {
+                    const start = reservation.checkIn > planningViewStartIso ? parseISO(reservation.checkIn) : planningViewStart;
+                    const end = reservation.checkOut < planningViewEndExclusiveIso ? parseISO(reservation.checkOut) : planningViewEndExclusive;
+                    const stayLength = Math.max(1, differenceInCalendarDays(parseISO(reservation.checkOut), parseISO(reservation.checkIn)));
+
+                    return {
+                      ...reservation,
+                      startColumn: differenceInCalendarDays(start, planningViewStart) + 2,
+                      endColumn: differenceInCalendarDays(end, planningViewStart) + 2,
+                      compact: stayLength <= 2
+                    };
+                  });
+                const blocks = state.availabilityBlocks
+                  .filter(
+                    (block) =>
+                      block.accommodationId === unit.id &&
+                      block.startDate < planningViewEndExclusiveIso &&
+                      block.endDate > planningViewStartIso
+                  )
+                  .map((block) => {
+                    const start = block.startDate > planningViewStartIso ? parseISO(block.startDate) : planningViewStart;
+                    const end = block.endDate < planningViewEndExclusiveIso ? parseISO(block.endDate) : planningViewEndExclusive;
+
+                    return {
+                      ...block,
+                      startColumn: differenceInCalendarDays(start, planningViewStart) + 2,
+                      endColumn: differenceInCalendarDays(end, planningViewStart) + 2
+                    };
+                  });
+                const activeCount = reservations.filter((reservation) =>
+                  overlaps(format(new Date(), "yyyy-MM-dd"), reservation.checkIn, reservation.checkOut)
+                ).length;
+
+                return (
+                  <div
+                    key={unit.id}
+                    className="grid min-h-[102px] items-stretch"
+                    style={{ gridTemplateColumns: planningGridColumns }}
+                  >
+                    <div className="sticky left-0 z-10 flex items-center border-r border-[#efe7df] bg-white px-4 py-4">
+                      <div className="flex w-full items-center gap-3 rounded-2xl border border-[#f0e5db] bg-[#fffdf9] p-3">
+                        <div className="relative h-14 w-14 overflow-hidden rounded-xl">
+                          <Image alt={unit.name} fill src={resolvePublicImage(unit.image, propertyImages.roomDouble)} className="object-cover" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-[#241b16]">{unit.name}</p>
+                          <p className="mt-1 text-xs text-[#7a6759]">
+                            {unit.capacity} huespedes · {activeCount ? `${activeCount} activa hoy` : "Sin llegada hoy"}
+                          </p>
+                          <p className="mt-1 text-xs text-[#a28b79]">{unit.beds}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {planningDates.map((date) => (
+                      <div
+                        key={`${unit.id}-${date.toISOString()}`}
+                        className={cn(
+                          "border-r border-[#f4ece4]",
+                          !isSameMonth(date, month) && "bg-[#faf6f1]",
+                          isWeekend(date) && isSameMonth(date, month) && "bg-[#fcf5ec]",
+                          isToday(date) && "bg-[#fff1da]"
+                        )}
+                      />
+                    ))}
+
+                    {blocks.map((block) => (
+                      <div
+                        key={block.id}
+                        className="z-10 mx-1 my-5 flex h-8 items-center rounded-full border border-dashed border-[#b8b1ab] bg-[repeating-linear-gradient(135deg,#efefef_0px,#efefef_8px,#e4e4e4_8px,#e4e4e4_16px)] px-3 text-xs font-medium text-[#5f5750]"
+                        style={{ gridColumn: `${block.startColumn} / ${block.endColumn}` }}
+                        title={`${block.reason} · ${format(parseISO(block.startDate), "dd MMM")} - ${format(parseISO(block.endDate), "dd MMM")}`}
+                      >
+                        <span className="truncate">Bloqueado · {block.reason}</span>
+                      </div>
+                    ))}
+
+                    {reservations.map((reservation) => (
+                      <div
+                        key={reservation.id}
+                        className={cn(
+                          "z-20 mx-1 my-3 flex min-h-[54px] items-center rounded-[18px] border px-3 shadow-[0_10px_18px_rgba(58,36,20,0.14)]",
+                          planningReservationTone(reservation.status)
+                        )}
+                        style={{ gridColumn: `${reservation.startColumn} / ${reservation.endColumn}` }}
+                        title={`${reservation.guestName} · ${reservation.accommodationName} · ${reservation.checkIn} - ${reservation.checkOut}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] opacity-90">
+                            <span>{reservation.source}</span>
+                            <span>·</span>
+                            <span>{planningReservationLabel(reservation.status)}</span>
+                          </div>
+                          <p className="mt-1 truncate text-sm font-semibold">
+                            {reservation.guestName}
+                            {!reservation.compact ? ` · ${reservation.guests} pax` : ""}
+                          </p>
+                          {!reservation.compact ? (
+                            <p className="truncate text-xs opacity-90">
+                              {format(parseISO(reservation.checkIn), "dd MMM")} - {format(parseISO(reservation.checkOut), "dd MMM")} ·{" "}
+                              {reservation.accommodationName}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <aside className="bg-[#fffaf5] px-6 py-6">
+          <div className="rounded-[24px] border border-[#ecdccb] bg-white p-5">
+            <div className="flex items-center gap-2 text-[#7d4d27]">
+              <Calendar className="h-4 w-4" />
+              <p className="text-sm font-semibold">Proximas reservas visibles</p>
+            </div>
+            <div className="mt-4 space-y-3">
+              {planningUpcomingReservations.length ? (
+                planningUpcomingReservations.map((reservation) => (
+                  <div key={reservation.id} className="rounded-2xl border border-[#f0e5db] bg-[#fffaf5] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-[#241b16]">{reservation.guestName}</p>
+                        <p className="mt-1 text-xs text-[#7a6759]">{reservation.accommodationName}</p>
+                      </div>
+                      <span className={cn("rounded-full px-2.5 py-1 text-[11px] font-semibold", statusTone(reservation.status))}>
+                        {statusLabel(reservation.status)}
+                      </span>
+                    </div>
+                    <div className="mt-3 space-y-2 text-xs text-[#6b5a4d]">
+                      <p className="flex items-center gap-2">
+                        <Clock3 className="h-3.5 w-3.5" />
+                        {format(parseISO(reservation.checkIn), "dd MMM")} - {format(parseISO(reservation.checkOut), "dd MMM")}
+                      </p>
+                      <p className="flex items-center gap-2">
+                        <Users className="h-3.5 w-3.5" />
+                        {reservation.guests} huespedes · {reservation.source}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-2xl border border-dashed border-[#e6d7ca] bg-[#fffdf9] p-4 text-sm text-[#7a6759]">
+                  No hay reservas activas en la ventana visible.
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
   const dates = eachDayOfInterval({
     start: startOfMonth(month),
     end: endOfMonth(month)
@@ -246,13 +641,13 @@ function OccupancyGrid({
           {onMonthChange ? (
             <>
               <button
-                onClick={() => onMonthChange(subMonths(month, 1))}
+                onClick={() => onMonthChange?.(subMonths(month, 1))}
                 className="rounded-xl border border-[#eadccf] bg-white p-3"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <button
-                onClick={() => onMonthChange(addMonths(month, 1))}
+                onClick={() => onMonthChange?.(addMonths(month, 1))}
                 className="rounded-xl border border-[#eadccf] bg-white p-3"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -688,7 +1083,9 @@ export function ReservationsSection() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [editing, setEditing] = useState<AdminReservation | null>(null);
+  const [viewing, setViewing] = useState<AdminReservation | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   const filtered = useMemo(
     () =>
@@ -749,10 +1146,17 @@ export function ReservationsSection() {
             { value: "canceled", label: "Canceladas" }
           ]}
           actionLabel="Nueva reserva"
-          onAction={() => {
-            setEditing(null);
-            setOpen(true);
-          }}
+          onAction={() =>
+            askForConfirmation({
+              title: "Crear nueva reserva",
+              description: "Vas a abrir el formulario para cargar una nueva reserva manualmente.",
+              confirmLabel: "Continuar",
+              onConfirm: () => {
+                setEditing(null);
+                setOpen(true);
+              }
+            })
+          }
         />
         <Table headers={["ID", "Huésped", "Alojamiento", "Fechas", "Huéspedes", "Estado", "Total", "Acciones"]}>
           {filtered.map((reservation) => (
@@ -771,13 +1175,31 @@ export function ReservationsSection() {
               <td className="px-5 py-4 font-semibold text-[#241b16]">{formatCurrency(reservation.total, "ARS")}</td>
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(reservation);
-                    setOpen(true);
-                  }}
-                  onDelete={() => void deleteReservation(reservation.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar reserva",
+                      description: `Vas a editar la reserva de ${reservation.guestName}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(reservation);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar reserva",
+                      description: `Esta accion eliminara la reserva de ${reservation.guestName}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => void deleteReservation(reservation.id)
+                    })
+                  }
                   extra={
-                    <button className="rounded-lg p-2 text-[#7a6759] transition hover:bg-[#f6efe8]">
+                    <button
+                      onClick={() => setViewing(reservation)}
+                      className="rounded-lg p-2 text-[#7a6759] transition hover:bg-[#f6efe8]"
+                    >
                       <Eye className="h-4 w-4" />
                     </button>
                   }
@@ -797,7 +1219,75 @@ export function ReservationsSection() {
         }}
         onSave={saveReservation}
       />
+      <ReservationDetailsModal
+        open={Boolean(viewing)}
+        reservation={viewing}
+        onClose={() => setViewing(null)}
+      />
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
+  );
+}
+
+function ReservationDetailsModal({
+  open,
+  reservation,
+  onClose
+}: {
+  open: boolean;
+  reservation: AdminReservation | null;
+  onClose: () => void;
+}) {
+  if (!reservation) {
+    return null;
+  }
+
+  return (
+    <Modal open={open} title={`Reserva ${reservation.id}`} onClose={onClose}>
+      <div className="grid gap-4 md:grid-cols-2">
+        <Field label="Huesped">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">{reservation.guestName}</div>
+        </Field>
+        <Field label="Contacto">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">
+            <p>{reservation.guestEmail}</p>
+            <p className="mt-1 text-[#7b695d]">{reservation.guestPhone}</p>
+          </div>
+        </Field>
+        <Field label="Alojamiento">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">{reservation.accommodationName}</div>
+        </Field>
+        <Field label="Estado">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">{statusLabel(reservation.status)}</div>
+        </Field>
+        <Field label="Fechas">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">
+            {formatDate(reservation.checkIn, "dd/MM/yyyy")} - {formatDate(reservation.checkOut, "dd/MM/yyyy")}
+          </div>
+        </Field>
+        <Field label="Total">
+          <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm font-semibold text-[#241b16]">
+            {formatCurrency(reservation.total, "ARS")}
+          </div>
+        </Field>
+        <div className="md:col-span-2">
+          <Field label="Notas">
+            <div className="rounded-xl border border-[#eadccf] px-4 py-3 text-sm text-[#241b16]">
+              {reservation.notes || "Sin notas."}
+            </div>
+          </Field>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -926,6 +1416,7 @@ export function GuestsSection() {
   const [filter, setFilter] = useState("all");
   const [editing, setEditing] = useState<AdminGuest | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   const filtered = state.guests.filter((guest) => {
     const matchesSearch =
@@ -950,10 +1441,17 @@ export function GuestsSection() {
             { value: "new", label: "Nuevos" }
           ]}
           actionLabel="Nuevo huésped"
-          onAction={() => {
-            setEditing(null);
-            setOpen(true);
-          }}
+          onAction={() =>
+            askForConfirmation({
+              title: "Crear nuevo huesped",
+              description: "Vas a abrir el formulario para registrar un nuevo huesped.",
+              confirmLabel: "Continuar",
+              onConfirm: () => {
+                setEditing(null);
+                setOpen(true);
+              }
+            })
+          }
         />
         <Table headers={["Nombre", "Email", "Teléfono", "Ciudad", "Reservas", "Estado", "Acciones"]}>
           {filtered.map((guest) => (
@@ -966,11 +1464,26 @@ export function GuestsSection() {
               <td className="px-5 py-4"><StatusBadge value={guest.status} /></td>
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(guest);
-                    setOpen(true);
-                  }}
-                  onDelete={() => deleteGuest(guest.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar huesped",
+                      description: `Vas a editar el registro de ${guest.name}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(guest);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar huesped",
+                      description: `Esta accion eliminara el registro de ${guest.name}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => deleteGuest(guest.id)
+                    })
+                  }
                 />
               </td>
             </tr>
@@ -979,15 +1492,15 @@ export function GuestsSection() {
       </div>
       <Modal open={open} title={editing ? "Editar huésped" : "Nuevo huésped"} onClose={() => setOpen(false)}>
         <form
-          action={(formData) => {
-            updateGuest({
-              id: editing?.id ?? createId("guest"),
+          action={async (formData) => {
+            await updateGuest({
+              ...(editing?.id ? { id: editing.id } : {}),
               name: formData.get("name")?.toString() ?? "",
               email: formData.get("email")?.toString() ?? "",
               phone: formData.get("phone")?.toString() ?? "",
               city: formData.get("city")?.toString() ?? "",
-              reservationsCount: Number(formData.get("reservationsCount")?.toString() ?? 0),
-              status: (formData.get("status")?.toString() ?? "new") as AdminGuest["status"]
+              reservationsCount: editing?.reservationsCount ?? 0,
+              status: editing?.status ?? "new"
             });
             setOpen(false);
             setEditing(null);
@@ -998,13 +1511,9 @@ export function GuestsSection() {
           <Field label="Email"><Input name="email" type="email" defaultValue={editing?.email} required /></Field>
           <Field label="Teléfono"><Input name="phone" defaultValue={editing?.phone} required /></Field>
           <Field label="Ciudad"><Input name="city" defaultValue={editing?.city} required /></Field>
-          <Field label="Reservas"><Input name="reservationsCount" type="number" min={0} defaultValue={editing?.reservationsCount ?? 0} required /></Field>
-          <Field label="Estado">
-            <Select name="status" defaultValue={editing?.status ?? "new"}>
-              <option value="new">Nuevo</option>
-              <option value="frequent">Frecuente</option>
-            </Select>
-          </Field>
+          <div className="md:col-span-2 rounded-2xl border border-[#eadccf] bg-[#fcfaf8] px-4 py-3 text-sm text-[#6b5a4d]">
+            El estado y la cantidad de reservas se calculan automaticamente a partir de las reservas vinculadas.
+          </div>
           <div className="md:col-span-2 flex justify-end">
             <button className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white">
               <Save className="h-4 w-4" />
@@ -1013,6 +1522,16 @@ export function GuestsSection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
@@ -1092,7 +1611,8 @@ export function UnitsSection() {
               images: editing?.images ?? [],
               uploads,
               status: (formData.get("status")?.toString() ?? "active") as AdminUnit["status"],
-              description: formData.get("description")?.toString() ?? ""
+              description: formData.get("description")?.toString() ?? "",
+              adultPriceRates: editing?.adultPriceRates ?? []
             });
             setOpen(false);
             setEditing(null);
@@ -1157,16 +1677,24 @@ export function AvailabilitySection() {
   const { state, updateAvailabilityBlock, deleteAvailabilityBlock } = useAdmin();
   const [editing, setEditing] = useState<AdminAvailabilityBlock | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   return (
     <AdminShell title="Disponibilidad / Bloqueos" description="Bloquea fechas y configura disponibilidad." sectionNumber="06">
       <div className="px-5 pb-10 sm:px-8 lg:px-10">
         <div className="mb-5 flex justify-end">
           <button
-            onClick={() => {
-              setEditing(null);
-              setOpen(true);
-            }}
+            onClick={() =>
+              askForConfirmation({
+                title: "Crear bloqueo",
+                description: "Vas a abrir el formulario para bloquear fechas de una unidad.",
+                confirmLabel: "Continuar",
+                onConfirm: () => {
+                  setEditing(null);
+                  setOpen(true);
+                }
+              })
+            }
             className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
           >
             <Plus className="h-4 w-4" />
@@ -1183,11 +1711,26 @@ export function AvailabilitySection() {
               <td className="px-5 py-4 text-[#7b695d]">{block.createdBy}</td>
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(block);
-                    setOpen(true);
-                  }}
-                  onDelete={() => void deleteAvailabilityBlock(block.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar bloqueo",
+                      description: `Vas a editar el bloqueo de ${block.accommodationName}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(block);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar bloqueo",
+                      description: `Esta accion eliminara el bloqueo de ${block.accommodationName}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => void deleteAvailabilityBlock(block.id)
+                    })
+                  }
                 />
               </td>
             </tr>
@@ -1200,7 +1743,7 @@ export function AvailabilitySection() {
             const accommodationId = formData.get("accommodationId")?.toString() ?? "";
             const unit = state.units.find((item) => item.id === accommodationId);
             await updateAvailabilityBlock({
-              id: editing?.id ?? createId("blk"),
+              ...(editing?.id ? { id: editing.id } : {}),
               accommodationId,
               accommodationName: unit?.name ?? "",
               startDate: formData.get("startDate")?.toString() ?? "",
@@ -1234,6 +1777,16 @@ export function AvailabilitySection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
@@ -1242,16 +1795,24 @@ export function PricingSection() {
   const { state, updatePriceSeason, deletePriceSeason } = useAdmin();
   const [editing, setEditing] = useState<AdminPriceSeason | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   return (
     <AdminShell title="Precios" description="Administra las tarifas por temporada." sectionNumber="07">
       <div className="px-5 pb-10 sm:px-8 lg:px-10">
         <div className="mb-5 flex justify-end">
           <button
-            onClick={() => {
-              setEditing(null);
-              setOpen(true);
-            }}
+            onClick={() =>
+              askForConfirmation({
+                title: "Crear temporada",
+                description: "Vas a abrir el formulario para cargar una nueva temporada.",
+                confirmLabel: "Continuar",
+                onConfirm: () => {
+                  setEditing(null);
+                  setOpen(true);
+                }
+              })
+            }
             className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
           >
             <Plus className="h-4 w-4" />
@@ -1271,11 +1832,26 @@ export function PricingSection() {
               ))}
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(season);
-                    setOpen(true);
-                  }}
-                  onDelete={() => deletePriceSeason(season.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar temporada",
+                      description: `Vas a editar la temporada ${season.name}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(season);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar temporada",
+                      description: `Esta accion eliminara la temporada ${season.name}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => deletePriceSeason(season.id)
+                    })
+                  }
                 />
               </td>
             </tr>
@@ -1284,14 +1860,14 @@ export function PricingSection() {
       </div>
       <Modal open={open} title={editing ? "Editar temporada" : "Nueva temporada"} onClose={() => setOpen(false)}>
         <form
-          action={(formData) => {
+          action={async (formData) => {
             const prices = state.units.reduce<Record<string, number>>((accumulator, unit) => {
               accumulator[unit.id] = Number(formData.get(`price-${unit.id}`)?.toString() ?? unit.price);
               return accumulator;
             }, {});
 
-            updatePriceSeason({
-              id: editing?.id ?? createId("season"),
+            await updatePriceSeason({
+              ...(editing?.id ? { id: editing.id } : {}),
               name: formData.get("name")?.toString() ?? "",
               startDate: formData.get("startDate")?.toString() ?? "",
               endDate: formData.get("endDate")?.toString() ?? "",
@@ -1320,6 +1896,16 @@ export function PricingSection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
@@ -1330,6 +1916,7 @@ export function InquiriesSection() {
   const [filter, setFilter] = useState("all");
   const [editing, setEditing] = useState<AdminInquiry | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   const filtered = state.inquiries.filter((inquiry) => {
     const matchesSearch =
@@ -1355,10 +1942,17 @@ export function InquiriesSection() {
             { value: "resolved", label: "Respondidas" }
           ]}
           actionLabel="Nueva consulta"
-          onAction={() => {
-            setEditing(null);
-            setOpen(true);
-          }}
+          onAction={() =>
+            askForConfirmation({
+              title: "Crear consulta",
+              description: "Vas a abrir el formulario para registrar una nueva consulta.",
+              confirmLabel: "Continuar",
+              onConfirm: () => {
+                setEditing(null);
+                setOpen(true);
+              }
+            })
+          }
         />
         <Table headers={["Fecha", "Nombre", "Contacto", "Asunto", "Estado", "Acciones"]}>
           {filtered.map((inquiry) => (
@@ -1370,13 +1964,34 @@ export function InquiriesSection() {
               <td className="px-5 py-4"><StatusBadge value={inquiry.status} /></td>
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(inquiry);
-                    setOpen(true);
-                  }}
-                  onDelete={() => deleteInquiry(inquiry.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar consulta",
+                      description: `Vas a editar la consulta de ${inquiry.name}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(inquiry);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar consulta",
+                      description: `Esta accion eliminara la consulta de ${inquiry.name}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => deleteInquiry(inquiry.id)
+                    })
+                  }
                   extra={
-                    <button className="rounded-lg p-2 text-[#7a6759] transition hover:bg-[#f6efe8]">
+                    <button
+                      onClick={() => {
+                        setEditing(inquiry);
+                        setOpen(true);
+                      }}
+                      className="rounded-lg p-2 text-[#7a6759] transition hover:bg-[#f6efe8]"
+                    >
                       <Eye className="h-4 w-4" />
                     </button>
                   }
@@ -1388,9 +2003,9 @@ export function InquiriesSection() {
       </div>
       <Modal open={open} title={editing ? "Editar consulta" : "Nueva consulta"} onClose={() => setOpen(false)}>
         <form
-          action={(formData) => {
-            updateInquiry({
-              id: editing?.id ?? createId("inq"),
+          action={async (formData) => {
+            await updateInquiry({
+              ...(editing?.id ? { id: editing.id } : {}),
               createdAt: editing?.createdAt ?? new Date().toISOString(),
               name: formData.get("name")?.toString() ?? "",
               contact: formData.get("contact")?.toString() ?? "",
@@ -1435,15 +2050,27 @@ export function InquiriesSection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
 
 export function ContentSection() {
+  const { runBlockingAction } = useAppFeedback();
   const { state, updateSiteContent } = useAdmin();
   const [content, setContent] = useState<AdminSiteContent>(state.siteContent);
   const [faqDraft, setFaqDraft] = useState<AdminFaqItem>({ id: "", question: "", answer: "" });
   const [policyDraft, setPolicyDraft] = useState<AdminPolicyItem>({ id: "", title: "", body: "" });
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   return (
     <AdminShell title="Contenido del sitio" description="Edita textos e imagenes del sitio web." sectionNumber="09">
@@ -1451,11 +2078,28 @@ export function ContentSection() {
         <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
           <SectionCard title="Secciones">
             <div className="grid gap-4">
+              <Field label="Etiqueta del hero">
+                <Input value={content.heroEyebrow} onChange={(event) => setContent((current) => ({ ...current, heroEyebrow: event.target.value }))} />
+              </Field>
               <Field label="Título principal">
                 <Input value={content.heroTitle} onChange={(event) => setContent((current) => ({ ...current, heroTitle: event.target.value }))} />
               </Field>
               <Field label="Subtitulo">
                 <Textarea value={content.heroSubtitle} onChange={(event) => setContent((current) => ({ ...current, heroSubtitle: event.target.value }))} />
+              </Field>
+              <Field label="Puntos destacados del hero">
+                <Textarea
+                  value={content.heroTrustPoints.join("\n")}
+                  onChange={(event) =>
+                    setContent((current) => ({
+                      ...current,
+                      heroTrustPoints: event.target.value
+                        .split("\n")
+                        .map((item) => item.trim())
+                        .filter(Boolean)
+                    }))
+                  }
+                />
               </Field>
               <Field label="Imagen de hero">
                 <input
@@ -1467,11 +2111,18 @@ export function ContentSection() {
                       return;
                     }
 
-                    const [upload] = await uploadAdminFiles({
-                      files: [file],
-                      scope: "content",
-                      entityId: "hero"
-                    });
+                    const [upload] = await runBlockingAction(
+                      () =>
+                        uploadAdminFiles({
+                          files: [file],
+                          scope: "content",
+                          entityId: "hero"
+                        }),
+                      {
+                        loadingMessage: "Estamos subiendo la imagen principal del sitio.",
+                        successMessage: "La imagen principal se actualizo correctamente."
+                      }
+                    );
 
                     if (upload) {
                       setContent((current) => ({ ...current, heroImage: upload.url }));
@@ -1485,6 +2136,15 @@ export function ContentSection() {
               </Field>
               <Field label="Descripcion de nosotros">
                 <Textarea value={content.aboutBody} onChange={(event) => setContent((current) => ({ ...current, aboutBody: event.target.value }))} />
+              </Field>
+              <Field label="Titulo de reseñas">
+                <Input value={content.testimonialsTitle} onChange={(event) => setContent((current) => ({ ...current, testimonialsTitle: event.target.value }))} />
+              </Field>
+              <Field label="Titulo de ubicación">
+                <Input value={content.locationTitle} onChange={(event) => setContent((current) => ({ ...current, locationTitle: event.target.value }))} />
+              </Field>
+              <Field label="Titulo de políticas">
+                <Input value={content.policiesTitle} onChange={(event) => setContent((current) => ({ ...current, policiesTitle: event.target.value }))} />
               </Field>
             </div>
           </SectionCard>
@@ -1507,10 +2167,17 @@ export function ContentSection() {
                     </div>
                     <button
                       onClick={() =>
-                        setContent((current) => ({
-                          ...current,
-                          faqs: current.faqs.filter((item) => item.id !== faq.id)
-                        }))
+                        askForConfirmation({
+                          title: "Eliminar FAQ",
+                          description: `Esta accion eliminara la pregunta "${faq.question}".`,
+                          confirmLabel: "Eliminar",
+                          intent: "danger",
+                          onConfirm: () =>
+                            setContent((current) => ({
+                              ...current,
+                              faqs: current.faqs.filter((item) => item.id !== faq.id)
+                            }))
+                        })
                       }
                       className="rounded-lg p-2 text-[#c1473d]"
                     >
@@ -1527,11 +2194,18 @@ export function ContentSection() {
                     if (!faqDraft.question || !faqDraft.answer) {
                       return;
                     }
-                    setContent((current) => ({
-                      ...current,
-                      faqs: [...current.faqs, { ...faqDraft, id: createId("faq") }]
-                    }));
-                    setFaqDraft({ id: "", question: "", answer: "" });
+                    askForConfirmation({
+                      title: "Agregar FAQ",
+                      description: `Vas a agregar la pregunta "${faqDraft.question}".`,
+                      confirmLabel: "Agregar",
+                      onConfirm: () => {
+                        setContent((current) => ({
+                          ...current,
+                          faqs: [...current.faqs, { ...faqDraft, id: createId("faq") }]
+                        }));
+                        setFaqDraft({ id: "", question: "", answer: "" });
+                      }
+                    });
                   }}
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#cfae92] text-sm font-semibold text-[#7d4d27]"
                 >
@@ -1553,10 +2227,17 @@ export function ContentSection() {
                     </div>
                     <button
                       onClick={() =>
-                        setContent((current) => ({
-                          ...current,
-                          policies: current.policies.filter((item) => item.id !== policy.id)
-                        }))
+                        askForConfirmation({
+                          title: "Eliminar politica",
+                          description: `Esta accion eliminara la politica "${policy.title}".`,
+                          confirmLabel: "Eliminar",
+                          intent: "danger",
+                          onConfirm: () =>
+                            setContent((current) => ({
+                              ...current,
+                              policies: current.policies.filter((item) => item.id !== policy.id)
+                            }))
+                        })
                       }
                       className="rounded-lg p-2 text-[#c1473d]"
                     >
@@ -1573,11 +2254,18 @@ export function ContentSection() {
                     if (!policyDraft.title || !policyDraft.body) {
                       return;
                     }
-                    setContent((current) => ({
-                      ...current,
-                      policies: [...current.policies, { ...policyDraft, id: createId("pol") }]
-                    }));
-                    setPolicyDraft({ id: "", title: "", body: "" });
+                    askForConfirmation({
+                      title: "Agregar politica",
+                      description: `Vas a agregar la politica "${policyDraft.title}".`,
+                      confirmLabel: "Agregar",
+                      onConfirm: () => {
+                        setContent((current) => ({
+                          ...current,
+                          policies: [...current.policies, { ...policyDraft, id: createId("pol") }]
+                        }));
+                        setPolicyDraft({ id: "", title: "", body: "" });
+                      }
+                    });
                   }}
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-[#cfae92] text-sm font-semibold text-[#7d4d27]"
                 >
@@ -1591,7 +2279,14 @@ export function ContentSection() {
 
         <div className="mt-6 flex justify-end">
           <button
-            onClick={() => void updateSiteContent(content)}
+            onClick={() =>
+              askForConfirmation({
+                title: "Guardar contenido",
+                description: "Vas a guardar los cambios del contenido publico del sitio.",
+                confirmLabel: "Guardar",
+                onConfirm: () => void updateSiteContent(content)
+              })
+            }
             className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
           >
             <Save className="h-4 w-4" />
@@ -1599,15 +2294,27 @@ export function ContentSection() {
           </button>
         </div>
       </div>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
 
 export function GallerySection() {
+  const { runBlockingAction } = useAppFeedback();
   const { state, createGalleryItems, updateGalleryItem, deleteGalleryItem } = useAdmin();
   const [filter, setFilter] = useState<GalleryCategory | "all">("all");
   const [editing, setEditing] = useState<AdminGalleryItem | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   const visibleItems = state.gallery.filter((item) => filter === "all" || item.category === filter);
 
@@ -1638,10 +2345,17 @@ export function GallerySection() {
             ))}
           </div>
           <button
-            onClick={() => {
-              setEditing(null);
-              setOpen(true);
-            }}
+            onClick={() =>
+              askForConfirmation({
+                title: "Subir imagen",
+                description: "Vas a abrir el formulario para cargar una nueva imagen en la galeria.",
+                confirmLabel: "Continuar",
+                onConfirm: () => {
+                  setEditing(null);
+                  setOpen(true);
+                }
+              })
+            }
             className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
           >
             <ImagePlus className="h-4 w-4" />
@@ -1661,11 +2375,26 @@ export function GallerySection() {
                     <p className="mt-1 text-sm capitalize text-[#7b695d]">{item.category}</p>
                   </div>
                   <RowActions
-                    onEdit={() => {
-                      setEditing(item);
-                      setOpen(true);
-                    }}
-                      onDelete={() => void deleteGalleryItem(item.id)}
+                    onEdit={() =>
+                      askForConfirmation({
+                        title: "Editar imagen",
+                        description: `Vas a editar la imagen "${item.title}".`,
+                        confirmLabel: "Editar",
+                        onConfirm: () => {
+                          setEditing(item);
+                          setOpen(true);
+                        }
+                      })
+                    }
+                    onDelete={() =>
+                      askForConfirmation({
+                        title: "Eliminar imagen",
+                        description: `Esta accion eliminara la imagen "${item.title}".`,
+                        confirmLabel: "Eliminar",
+                        intent: "danger",
+                        onConfirm: () => void deleteGalleryItem(item.id)
+                      })
+                    }
                   />
                 </div>
               </div>
@@ -1682,11 +2411,20 @@ export function GallerySection() {
               .getAll("images")
               .filter((entry): entry is File => entry instanceof File && entry.size > 0);
 
-            const uploads = await uploadAdminFiles({
-              files,
-              scope: "gallery",
-              entityId: category
-            });
+            const uploads = await runBlockingAction(
+              () =>
+                uploadAdminFiles({
+                  files,
+                  scope: "gallery",
+                  entityId: category
+                }),
+              {
+                loadingMessage: "Estamos subiendo las imagenes de la galeria.",
+                successMessage: files.length
+                  ? "Las imagenes se subieron correctamente."
+                  : undefined
+              }
+            );
 
             if (editing) {
               await updateGalleryItem({
@@ -1740,6 +2478,16 @@ export function GallerySection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
@@ -1748,16 +2496,24 @@ export function UsersSection() {
   const { state, updateUser, deleteUser } = useAdmin();
   const [editing, setEditing] = useState<AdminUser | null>(null);
   const [open, setOpen] = useState(false);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   return (
     <AdminShell title="Usuarios" description="Gestiona usuarios con acceso al panel." sectionNumber="11">
       <div className="px-5 pb-10 sm:px-8 lg:px-10">
         <div className="mb-5 flex justify-end">
           <button
-            onClick={() => {
-              setEditing(null);
-              setOpen(true);
-            }}
+            onClick={() =>
+              askForConfirmation({
+                title: "Crear usuario",
+                description: "Vas a abrir el formulario para crear un nuevo usuario del panel.",
+                confirmLabel: "Continuar",
+                onConfirm: () => {
+                  setEditing(null);
+                  setOpen(true);
+                }
+              })
+            }
             className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
           >
             <Plus className="h-4 w-4" />
@@ -1774,11 +2530,26 @@ export function UsersSection() {
               <td className="px-5 py-4 text-[#7b695d]">{formatDate(user.lastAccess, "dd/MM/yyyy HH:mm")}</td>
               <td className="px-5 py-4">
                 <RowActions
-                  onEdit={() => {
-                    setEditing(user);
-                    setOpen(true);
-                  }}
-                  onDelete={() => deleteUser(user.id)}
+                  onEdit={() =>
+                    askForConfirmation({
+                      title: "Editar usuario",
+                      description: `Vas a editar el usuario ${user.name}.`,
+                      confirmLabel: "Editar",
+                      onConfirm: () => {
+                        setEditing(user);
+                        setOpen(true);
+                      }
+                    })
+                  }
+                  onDelete={() =>
+                    askForConfirmation({
+                      title: "Eliminar usuario",
+                      description: `Esta accion eliminara el usuario ${user.name}.`,
+                      confirmLabel: "Eliminar",
+                      intent: "danger",
+                      onConfirm: () => deleteUser(user.id)
+                    })
+                  }
                 />
               </td>
             </tr>
@@ -1787,13 +2558,14 @@ export function UsersSection() {
       </div>
       <Modal open={open} title={editing ? "Editar usuario" : "Nuevo usuario"} onClose={() => setOpen(false)}>
         <form
-          action={(formData) => {
-            updateUser({
-              id: editing?.id ?? createId("usr"),
+          action={async (formData) => {
+            await updateUser({
+              ...(editing?.id ? { id: editing.id } : {}),
               name: formData.get("name")?.toString() ?? "",
               email: formData.get("email")?.toString() ?? "",
               role: (formData.get("role")?.toString() ?? "Editor") as AdminUser["role"],
               status: (formData.get("status")?.toString() ?? "active") as AdminUser["status"],
+              password: formData.get("password")?.toString() ?? "",
               lastAccess: editing?.lastAccess ?? new Date().toISOString()
             });
             setOpen(false);
@@ -1817,6 +2589,17 @@ export function UsersSection() {
               <option value="inactive">Inactivo</option>
             </Select>
           </Field>
+          <div className="md:col-span-2">
+            <Field label={editing ? "Nueva contrasena (opcional)" : "Contrasena"}>
+              <Input
+                name="password"
+                type="password"
+                minLength={6}
+                required={!editing}
+                placeholder={editing ? "Dejar vacio para mantener la actual" : "Minimo 6 caracteres"}
+              />
+            </Field>
+          </div>
           <div className="md:col-span-2 flex justify-end">
             <button className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white">
               <Save className="h-4 w-4" />
@@ -1825,6 +2608,16 @@ export function UsersSection() {
           </div>
         </form>
       </Modal>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }
@@ -1832,6 +2625,7 @@ export function UsersSection() {
 export function SettingsSection() {
   const { state, updateSettings, resetState } = useAdmin();
   const [settings, setSettings] = useState<AdminSettings>(state.settings);
+  const { confirmation, askForConfirmation, closeConfirmation, confirmAction } = useActionConfirmation();
 
   return (
     <AdminShell title="Configuración" description="Ajustes generales del sistema." sectionNumber="12">
@@ -1849,24 +2643,47 @@ export function SettingsSection() {
           <SectionCard title="Configuración" action={<MapPin className="h-5 w-5 text-[#8f5625]" />}>
             <div className="grid gap-4 md:grid-cols-2">
               <Field label="Nombre del alojamiento"><Input value={settings.propertyName} onChange={(event) => setSettings((current) => ({ ...current, propertyName: event.target.value }))} /></Field>
+              <Field label="WhatsApp"><Input value={settings.whatsappNumber} onChange={(event) => setSettings((current) => ({ ...current, whatsappNumber: event.target.value }))} /></Field>
               <Field label="Email de contacto"><Input value={settings.contactEmail} onChange={(event) => setSettings((current) => ({ ...current, contactEmail: event.target.value }))} /></Field>
               <Field label="Teléfono"><Input value={settings.phone} onChange={(event) => setSettings((current) => ({ ...current, phone: event.target.value }))} /></Field>
+              <Field label="Instagram"><Input value={settings.instagramUrl} onChange={(event) => setSettings((current) => ({ ...current, instagramUrl: event.target.value }))} /></Field>
+              <Field label="Facebook"><Input value={settings.facebookUrl} onChange={(event) => setSettings((current) => ({ ...current, facebookUrl: event.target.value }))} /></Field>
+              <Field label="Reseñas de Google"><Input value={settings.googleReviewsUrl} onChange={(event) => setSettings((current) => ({ ...current, googleReviewsUrl: event.target.value }))} /></Field>
+              <Field label="Google Maps"><Input value={settings.googleMapsUrl} onChange={(event) => setSettings((current) => ({ ...current, googleMapsUrl: event.target.value }))} /></Field>
               <Field label="Moneda"><Input value={settings.currency} onChange={(event) => setSettings((current) => ({ ...current, currency: event.target.value }))} /></Field>
               <Field label="Zona horaria"><Input value={settings.timezone} onChange={(event) => setSettings((current) => ({ ...current, timezone: event.target.value }))} /></Field>
+              <Field label="Seña (%)"><Input type="number" min={1} max={100} value={settings.depositPercentage} onChange={(event) => setSettings((current) => ({ ...current, depositPercentage: Number(event.target.value || 10) }))} /></Field>
               <Field label="Dirección"><Input value={settings.address} onChange={(event) => setSettings((current) => ({ ...current, address: event.target.value }))} /></Field>
+              <Field label="Ciudad"><Input value={settings.city} onChange={(event) => setSettings((current) => ({ ...current, city: event.target.value }))} /></Field>
+              <Field label="Región"><Input value={settings.region} onChange={(event) => setSettings((current) => ({ ...current, region: event.target.value }))} /></Field>
               <Field label="Check-in"><Input value={settings.checkInTime} onChange={(event) => setSettings((current) => ({ ...current, checkInTime: event.target.value }))} /></Field>
               <Field label="Check-out"><Input value={settings.checkOutTime} onChange={(event) => setSettings((current) => ({ ...current, checkOutTime: event.target.value }))} /></Field>
             </div>
             <div className="mt-6 flex flex-wrap justify-end gap-3">
               <button
-                onClick={resetState}
+                onClick={() =>
+                  askForConfirmation({
+                    title: "Restaurar demo",
+                    description: "Vas a restaurar el estado demo del panel y perder cambios locales no guardados.",
+                    confirmLabel: "Restaurar",
+                    intent: "danger",
+                    onConfirm: resetState
+                  })
+                }
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-[#cfae92] px-5 text-sm font-semibold text-[#7d4d27]"
               >
                 <Clock3 className="h-4 w-4" />
                 Restaurar demo
               </button>
               <button
-                onClick={() => void updateSettings(settings)}
+                onClick={() =>
+                  askForConfirmation({
+                    title: "Guardar configuracion",
+                    description: "Vas a guardar los cambios generales del panel administrativo.",
+                    confirmLabel: "Guardar",
+                    onConfirm: () => void updateSettings(settings)
+                  })
+                }
                 className="inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-[linear-gradient(90deg,#8f5625_0%,#6d3d18_100%)] px-5 text-sm font-semibold text-white"
               >
                 <Save className="h-4 w-4" />
@@ -1876,6 +2693,16 @@ export function SettingsSection() {
           </SectionCard>
         </div>
       </div>
+      <ActionConfirmationDialog
+        open={Boolean(confirmation)}
+        title={confirmation?.title ?? ""}
+        description={confirmation?.description ?? ""}
+        confirmLabel={confirmation?.confirmLabel}
+        cancelLabel={confirmation?.cancelLabel}
+        intent={confirmation?.intent}
+        onCancel={closeConfirmation}
+        onConfirm={confirmAction}
+      />
     </AdminShell>
   );
 }

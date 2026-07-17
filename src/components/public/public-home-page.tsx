@@ -31,14 +31,17 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { useAppFeedback } from "@/components/feedback/app-feedback-provider";
+import { PublicReservationLookupPanel } from "@/components/public/public-reservation-lookup-panel";
 import { Button } from "@/components/ui/button";
+import { AccommodationModal } from "@/components/public/accommodation-modal";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { propertyImages } from "@/data/property-images";
 import {
   buildWhatsAppMessages,
   buildWhatsAppUrl,
-  persistInquiryToAdminDemo,
   type PublicInfoModalId
 } from "@/lib/public-site";
 import { buildPricingPreview } from "@/lib/pricing/pricing";
@@ -46,7 +49,6 @@ import { formatCurrency, formatDate } from "@/lib/utils/format";
 import { resolvePublicImage } from "@/lib/utils/images";
 import {
   inquirySchema,
-  reservationLookupSchema,
   reservationRequestSchema
 } from "@/lib/validations/reservation";
 import type {
@@ -60,63 +62,92 @@ import type {
 
 const SERVICE_ICONS = [Wifi, UtensilsCrossed, Mountain, Car, CookingPot, Trees, HeartHandshake];
 const SERVICE_LABELS = [
-  { title: "Wi-Fi", subtitle: "gratuito" },
-  { title: "Desayuno", subtitle: "opcional" },
-  { title: "Calefacci\u00F3n", subtitle: "en todos los ambientes" },
-  { title: "Estacionamiento", subtitle: "gratuito" },
-  { title: "Cocina", subtitle: "equipada" },
-  { title: "Patio y jard\u00EDn", subtitle: "con vistas" },
-  { title: "Asistencia", subtitle: "personalizada" }
-];
-
-const FALLBACK_TESTIMONIALS = [
-  {
-    quote:
-      "Un lugar hermoso, s\u00FAper tranquilo y muy bien ubicado. La atenci\u00F3n de 10, sin duda volveremos.",
-    author: "Mariana, Buenos Aires"
-  },
-  {
-    quote:
-      "La caba\u00F1a tiene todo lo necesario y las vistas son incre\u00EDbles. Recomendad\u00EDsimo.",
-    author: "Lucas, C\u00F3rdoba"
-  },
-  {
-    quote:
-      "Nos sentimos como en casa. Tilcara es m\u00E1gico y Los \u00C1lamos lo hace a\u00FAn mejor.",
-    author: "Ana y Pedro, Mendoza"
-  }
-];
-
-const LOCATION_HIGHLIGHTS = [
-  "7 min del centro de Tilcara",
-  "10 min del Pucar\u00E1",
-  "15 min de Garganta del Diablo"
+  { title: "Wi-Fi", subtitle: "Conexión disponible en el hospedaje." },
+  { title: "Desayuno", subtitle: "Consultanos si está incluido o si se ofrece aparte." },
+  { title: "Calefacción", subtitle: "Disponible según el alojamiento." },
+  { title: "Estacionamiento", subtitle: "Te confirmamos la modalidad antes de reservar." },
+  { title: "Cocina", subtitle: "Privada, compartida o no disponible según la unidad." },
+  { title: "Exterior", subtitle: "Espacios para descansar y disfrutar del entorno." },
+  { title: "Atención", subtitle: "Comunicación directa antes y durante tu estadía." }
 ];
 
 const NAV_ITEMS = [
   { label: "Inicio", href: "#inicio" },
   { label: "Alojamientos", href: "#alojamientos" },
   { label: "Servicios", href: "#servicios" },
-  { label: "Galer\u00EDa", href: "#galeria" },
-  { label: "Ubicaci\u00F3n", href: "#ubicacion" },
-  { label: "Nosotros", href: "#nosotros" },
-  { label: "Contacto", href: "#contacto" }
+  { label: "Galería", href: "#galeria" },
+  { label: "Ubicación", href: "#ubicacion" },
+  { label: "Preguntas frecuentes", href: "#preguntas-frecuentes" }
 ];
 
+const LOCATION_HIGHLIGHTS = [
+  "Tilcara, Jujuy",
+  "Base ideal para recorrer la Quebrada",
+  "Indicaciones enviadas al confirmar tu reserva"
+];
+
+const EXACT_GOOGLE_MAPS_EMBED_URL =
+  "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3656.817950934423!2d-65.39391372391393!3d-23.574980962094184!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x9404cb5d5f103405%3A0x3822d60e0a53519e!2sAlverro%20157%2C%20Y4624%20Tilcara%2C%20Jujuy!5e0!3m2!1ses-419!2sar!4v1783687185243!5m2!1ses-419!2sar";
+
+const PLACEHOLDER_PHONES = new Set(["+54 9 388 123 4567", "5493881234567"]);
+const PLACEHOLDER_EMAILS = new Set(["reservas@losalamostilcara.com"]);
+const PLACEHOLDER_ADDRESSES = new Set(["Tilcara, Quebrada de Humahuaca"]);
+
+function hasPublishedTestimonials(testimonials: LandingContent["testimonials"]) {
+  return testimonials.some((item) => item.active && item.source !== "draft");
+}
+
+function isVisiblePhone(phone: string) {
+  return Boolean(phone) && !PLACEHOLDER_PHONES.has(phone);
+}
+
+function isVisibleEmail(email: string) {
+  return Boolean(email) && !PLACEHOLDER_EMAILS.has(email);
+}
+
+function isVisibleAddress(address: string) {
+  return Boolean(address) && !PLACEHOLDER_ADDRESSES.has(address);
+}
+
 type AvailabilityResult = {
-  units: Array<Pick<Unit, "id" | "name" | "shortDescription" | "basePricePerNight" | "featuredImage" | "maxGuests">>;
+  units: Array<Pick<Unit, "id" | "name" | "shortDescription" | "fromPricePerNight" | "featuredImage" | "maxGuests">>;
 };
 
 type BookingPrefill = Partial<ReservationFormValues> & {
   unitId?: string;
 };
 
+const BOOKING_DRAFT_STORAGE_KEY = "los-alamos-booking-draft";
+
+const EMPTY_BOOKING_DRAFT: BookingPrefill = {
+  adults: 1,
+  children: 0,
+  checkIn: "",
+  checkOut: "",
+  unitId: "",
+  fullName: "",
+  phone: "",
+  email: "",
+  city: "",
+  country: "",
+  specialNotes: "",
+  estimatedArrivalTime: ""
+};
+
+function normalizeBookingDraft(input?: BookingPrefill | null): BookingPrefill {
+  return {
+    ...EMPTY_BOOKING_DRAFT,
+    ...input,
+    adults: Number(input?.adults ?? EMPTY_BOOKING_DRAFT.adults),
+    children: Number(input?.children ?? EMPTY_BOOKING_DRAFT.children)
+  };
+}
+
 type ReservationFormValues = z.infer<typeof reservationRequestSchema>;
 type InquiryFormValues = z.infer<typeof inquirySchema>;
-type ReservationLookupFormValues = z.infer<typeof reservationLookupSchema>;
 
 const RESERVATION_STATUS_LABELS: Partial<Record<PublicReservationLookup["status"], string>> = {
-  pending_verification: "Verificaci\u00f3n pendiente",
+  pending_verification: "Verificación pendiente",
   verified_pending_payment: "Pago pendiente",
   pending_payment: "Pago pendiente",
   confirmed: "Confirmada",
@@ -183,6 +214,7 @@ export function PublicHomePage({
   siteSettings: SiteSettings;
   units: Unit[];
 }) {
+  const { runBlockingAction } = useAppFeedback();
   const whatsappMessages = useMemo(() => buildWhatsAppMessages(siteSettings, units), [siteSettings, units]);
   const featuredUnits = units.slice(0, 3);
   const heroImage = resolvePublicImage(landingContent.hero.imageUrl ?? units[0]?.featuredImage, propertyImages.hero);
@@ -207,30 +239,83 @@ export function PublicHomePage({
           ),
     [gallery, units]
   );
-  const testimonials = landingContent.testimonials.length
-    ? landingContent.testimonials.map((item) => ({
+  const testimonials = landingContent.testimonials
+    .filter((item) => item.active && item.source !== "draft")
+    .map((item) => ({
         quote: item.quote,
         author: item.guestName
-      }))
-    : FALLBACK_TESTIMONIALS;
+      }));
   const reservationLookupWhatsappMessage =
     "Hola, necesito ayuda para consultar el estado de mi reserva.";
+  const showPublishedTestimonials = hasPublishedTestimonials(landingContent.testimonials);
+  const showPhone = isVisiblePhone(siteSettings.phone);
+  const showEmail = isVisibleEmail(siteSettings.email);
+  const showAddress = isVisibleAddress(siteSettings.address);
+
+  function scrollToAvailability() {
+    const section = document.getElementById("consultar-disponibilidad");
+    section?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   const [activeInfoModal, setActiveInfoModal] = useState<PublicInfoModalId | null>(null);
+  const [selectedAccommodationUnitId, setSelectedAccommodationUnitId] = useState<string | null>(null);
   const [bookingModalUnitId, setBookingModalUnitId] = useState<string | undefined>();
-  const [bookingModalPrefill, setBookingModalPrefill] = useState<BookingPrefill>({});
+  const [bookingDraft, setBookingDraft] = useState<BookingPrefill>(EMPTY_BOOKING_DRAFT);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [inquiryModalOpen, setInquiryModalOpen] = useState(false);
   const [reservationLookupModalOpen, setReservationLookupModalOpen] = useState(false);
   const [availabilityResults, setAvailabilityResults] = useState<AvailabilityResult | null>(null);
   const [availabilityError, setAvailabilityError] = useState<string | null>(null);
-  const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [searchForm, setSearchForm] = useState({
-    checkIn: "",
-    checkOut: "",
-    guests: "1",
+    checkIn: EMPTY_BOOKING_DRAFT.checkIn ?? "",
+    checkOut: EMPTY_BOOKING_DRAFT.checkOut ?? "",
+    guests: String(EMPTY_BOOKING_DRAFT.adults ?? 1),
     unitId: ""
   });
+  const selectedAccommodationUnit = units.find((unit) => unit.id === selectedAccommodationUnitId) ?? null;
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const raw = window.localStorage.getItem(BOOKING_DRAFT_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const parsed = normalizeBookingDraft(JSON.parse(raw) as BookingPrefill);
+      setBookingDraft(parsed);
+      setSearchForm({
+        checkIn: parsed.checkIn ?? "",
+        checkOut: parsed.checkOut ?? "",
+        guests: String(parsed.adults ?? 1),
+        unitId: parsed.unitId ?? ""
+      });
+      setBookingModalUnitId(parsed.unitId || undefined);
+    } catch {
+      window.localStorage.removeItem(BOOKING_DRAFT_STORAGE_KEY);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(BOOKING_DRAFT_STORAGE_KEY, JSON.stringify(normalizeBookingDraft(bookingDraft)));
+  }, [bookingDraft]);
+
+  useEffect(() => {
+    setSearchForm((current) => ({
+      ...current,
+      checkIn: bookingDraft.checkIn ?? "",
+      checkOut: bookingDraft.checkOut ?? "",
+      guests: String(bookingDraft.adults ?? current.guests ?? "1"),
+      unitId: bookingDraft.unitId ?? ""
+    }));
+  }, [bookingDraft.adults, bookingDraft.checkIn, bookingDraft.checkOut, bookingDraft.unitId]);
 
   async function handleAvailabilitySubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -247,38 +332,64 @@ export function PublicHomePage({
       return;
     }
 
-    setAvailabilityLoading(true);
-
     try {
-      const response = await fetch("/api/availability", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...searchForm,
-          guests: Number(searchForm.guests),
-          unitId: searchForm.unitId || undefined
-        })
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/availability", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...searchForm,
+              guests: Number(searchForm.guests),
+              unitId: searchForm.unitId || undefined
+            })
+          });
 
-      const data = (await response.json()) as AvailabilityResult;
+          const payload = (await response.json().catch(() => null)) as
+            | (AvailabilityResult & { error?: string })
+            | null;
+
+          if (!response.ok || !payload) {
+            throw new Error(payload?.error ?? "No pudimos consultar disponibilidad.");
+          }
+
+          return payload;
+        },
+        {
+          loadingMessage: "Estamos consultando la disponibilidad de los alojamientos.",
+          successMessage: (payload) =>
+            payload.units.length
+              ? "La disponibilidad se actualizo correctamente."
+              : "No encontramos opciones exactas para ese rango."
+        }
+      );
+
       setAvailabilityResults(data);
-    } catch {
-      setAvailabilityError("No pudimos consultar disponibilidad. Intenta nuevamente.");
-    } finally {
-      setAvailabilityLoading(false);
+    } catch (error) {
+      setAvailabilityError(
+        error instanceof Error
+          ? error.message
+          : "No pudimos consultar disponibilidad. Intenta nuevamente."
+      );
     }
   }
 
   function openBookingModal(unitId?: string) {
-    setBookingModalPrefill({
-      checkIn: searchForm.checkIn || undefined,
-      checkOut: searchForm.checkOut || undefined,
-      adults: Number(searchForm.guests || "2"),
-      children: 0,
-      unitId: unitId ?? searchForm.unitId ?? undefined
-    });
+    setBookingDraft((current) =>
+      normalizeBookingDraft({
+        ...current,
+        checkIn: searchForm.checkIn || current.checkIn,
+        checkOut: searchForm.checkOut || current.checkOut,
+        adults: Number(searchForm.guests || String(current.adults ?? 1)),
+        unitId: unitId ?? searchForm.unitId ?? current.unitId
+      })
+    );
     setBookingModalUnitId(unitId);
     setBookingModalOpen(true);
+  }
+
+  function openAccommodationModal(unitId: string) {
+    setSelectedAccommodationUnitId(unitId);
   }
 
   return (
@@ -293,23 +404,23 @@ export function PublicHomePage({
         <div className="relative z-10">
           <div className="border-b border-white/10 bg-[#2a241b]/94">
             <div className="mx-auto flex max-w-[1728px] flex-col gap-2 px-4 py-3 text-[12px] text-white/88 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-              <p>Tilcara, Jujuy, Argentina</p>
+              <p>Hospedaje en Tilcara, Jujuy</p>
               <div className="flex flex-wrap items-center gap-5">
-                <a href={`tel:${siteSettings.phone}`} className="inline-flex items-center gap-2 whitespace-nowrap">
-                  <Phone className="h-3.5 w-3.5" />
-                  {siteSettings.phone}
-                </a>
+                <p className="inline-flex items-center gap-2 whitespace-nowrap">
+                  <MessageCircle className="h-3.5 w-3.5" />
+                  Atención directa por WhatsApp
+                </p>
                 <a
                   href={buildWhatsAppUrl({
                     number: siteSettings.whatsappNumber,
-                    message: whatsappMessages.general
+                    message: whatsappMessages.availability
                   })}
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center gap-2 whitespace-nowrap"
                 >
-                  <MessageCircle className="h-3.5 w-3.5" />
-                  Escribinos por WhatsApp
+                  <CalendarDays className="h-3.5 w-3.5" />
+                  Consultar disponibilidad
                 </a>
               </div>
             </div>
@@ -322,7 +433,7 @@ export function PublicHomePage({
                   <Trees className="h-7 w-7 text-[#ece0cb] sm:h-8 sm:w-8" strokeWidth={1.4} />
                 </div>
                 <div>
-                  <p className="font-display text-[34px] leading-none tracking-[-0.05em] text-[#fffaf4] sm:text-[44px]">Los {"\u00C1"}lamos</p>
+                  <p className="font-display text-[34px] leading-none tracking-[-0.05em] text-[#fffaf4] sm:text-[44px]">Los Álamos</p>
                   <p className="mt-1 pl-1 text-[10px] uppercase tracking-[0.48em] text-white/70">Tilcara</p>
                 </div>
               </div>
@@ -336,39 +447,35 @@ export function PublicHomePage({
               </nav>
 
               <button
-                onClick={() => openBookingModal()}
+                onClick={scrollToAvailability}
                 className="inline-flex h-14 w-full items-center justify-center rounded-[22px] border border-[#b8a27f] bg-[#35311f] px-6 text-[11px] font-extrabold uppercase tracking-[0.12em] text-white shadow-[0_14px_30px_rgba(12,10,7,0.16)] sm:h-[64px] sm:w-auto sm:rounded-[26px] sm:px-9 sm:text-[12px]"
               >
                 <CalendarDays className="mr-3 h-4 w-4" />
-                Consultar disponibilidad
+                Consultar fechas
               </button>
             </header>
 
             <div className="min-h-[700px] pt-8 pb-24 sm:min-h-[860px] sm:pt-12 sm:pb-36">
               <div className="max-w-[630px] pt-10 sm:pt-16">
-                <h1 className="font-display text-[54px] leading-[0.92] tracking-[-0.06em] text-[#fff9f3] sm:text-[92px]">
-                  Los {"\u00C1"}lamos
-                  <br />
-                  Tilcara
-                </h1>
-                <p className="mt-6 text-[15px] font-semibold uppercase tracking-[0.2em] text-[#f2ead9] sm:mt-8 sm:text-[29px] sm:tracking-[0.22em]">
-                  Descanso, naturaleza y conexi\u00F3n
+                <p className="text-[12px] font-extrabold uppercase tracking-[0.22em] text-[#f2ead9] sm:text-[13px]">
+                  HOSPEDAJE EN TILCARA, JUJUY
                 </p>
+                <h1 className="mt-5 font-display text-[54px] leading-[0.92] tracking-[-0.06em] text-[#fff9f3] sm:text-[92px]">
+                  Descansá en Tilcara y viví la Quebrada a tu ritmo
+                </h1>
                 <p className="mt-6 max-w-[560px] text-[17px] leading-[1.65] text-white/90 sm:mt-8 sm:text-[20px] sm:leading-[1.72]">
-                  Un lugar para descansar y conectar
-                  <br />
-                  con la magia de la Quebrada de Humahuaca.
+                  Un lugar tranquilo para descansar después de recorrer los paisajes, pueblos y caminos de la Quebrada de Humahuaca.
                 </p>
 
                 <div className="mt-8 grid gap-3 md:grid-cols-3 sm:mt-11">
-                  {landingContent.hero.trustPoints.slice(0, 3).map((point, index) => {
+                  {["Atención directa", "Ubicación en Tilcara", "Reserva simple y personalizada"].map((point, index) => {
                     const Icon = index === 0 ? CalendarDays : index === 1 ? HeartHandshake : MapPin;
                     const subtitle =
                       index === 0
-                        ? "Mejor precio garantizado"
+                        ? "Comunicación clara desde el primer mensaje"
                         : index === 1
-                          ? "Estamos para vos"
-                          : "Cerca de todo";
+                          ? "Base ideal para recorrer la Quebrada"
+                          : "Te guiamos según tus fechas y cantidad de huéspedes";
 
                     return (
                       <div
@@ -387,33 +494,24 @@ export function PublicHomePage({
 
                 <div className="mt-8 grid gap-3 sm:mt-9 sm:flex sm:flex-wrap sm:gap-4">
                   <button
-                    onClick={() => openBookingModal()}
+                    onClick={scrollToAvailability}
                     className="inline-flex h-[54px] items-center justify-center rounded-[20px] border border-[#b2a071] bg-[#37341f] px-6 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white sm:h-[58px] sm:rounded-[24px] sm:px-8 sm:text-[13px]"
                   >
                     <CalendarDays className="mr-3 h-4 w-4" />
                     Consultar disponibilidad
                   </button>
                   <a
-                    href={buildWhatsAppUrl({
-                      number: siteSettings.whatsappNumber,
-                      message: whatsappMessages.availability
-                    })}
-                    target="_blank"
-                    rel="noreferrer"
+                    href="#alojamientos"
                     className="inline-flex h-[54px] items-center justify-center rounded-[20px] border border-white/35 bg-white/[0.06] px-6 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white sm:h-[58px] sm:rounded-[24px] sm:px-8 sm:text-[13px]"
                   >
-                    <MessageCircle className="mr-3 h-4 w-4" />
-                    Escribir por WhatsApp
+                    <ChevronRight className="mr-3 h-4 w-4" />
+                    Conocer los alojamientos
                   </a>
-                  <button
-                    onClick={() => setReservationLookupModalOpen(true)}
-                    className="inline-flex h-[54px] items-center justify-center rounded-[20px] border border-white/35 bg-white/[0.04] px-6 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white sm:h-[58px] sm:rounded-[24px] sm:px-8 sm:text-[13px]"
-                    type="button"
-                  >
-                    <FileSearch className="mr-3 h-4 w-4" />
-                    Consultar mi reserva
-                  </button>
                 </div>
+
+                <p className="mt-6 max-w-[600px] text-[14px] leading-7 text-white/78 sm:text-[15px]">
+                  Contanos cuándo viajás y cuántas personas son. Te responderemos con las opciones disponibles y el precio total de la estadía.
+                </p>
               </div>
             </div>
 
@@ -428,27 +526,23 @@ export function PublicHomePage({
               </div>
 
               <form onSubmit={handleAvailabilitySubmit} className="mt-6 grid gap-3 sm:mt-8 sm:gap-4 xl:grid-cols-[1fr_1fr_1fr_1fr_236px] xl:items-stretch">
-                <BookingField
-                  label="Check-in"
-                  value={searchForm.checkIn}
-                  icon={Calendar}
-                  onChange={(value) => setSearchForm((current) => ({ ...current, checkIn: value }))}
-                  type="date"
-                  placeholder="Seleccionar fecha"
-                />
-                <BookingField
-                  label="Check-out"
-                  value={searchForm.checkOut}
-                  icon={Calendar}
-                  onChange={(value) => setSearchForm((current) => ({ ...current, checkOut: value }))}
-                  type="date"
-                  placeholder="Seleccionar fecha"
+                <DateRangePicker
+                  checkIn={searchForm.checkIn}
+                  checkOut={searchForm.checkOut}
+                  className="xl:col-span-2"
+                  onChange={({ checkIn, checkOut }) => {
+                    setSearchForm((current) => ({ ...current, checkIn, checkOut }));
+                    setBookingDraft((current) => normalizeBookingDraft({ ...current, checkIn, checkOut }));
+                  }}
                 />
                 <BookingField
                   label={"Hu\u00E9spedes"}
                   value={searchForm.guests}
                   icon={User}
-                  onChange={(value) => setSearchForm((current) => ({ ...current, guests: value }))}
+                  onChange={(value) => {
+                    setSearchForm((current) => ({ ...current, guests: value }));
+                    setBookingDraft((current) => normalizeBookingDraft({ ...current, adults: Number(value || "1") }));
+                  }}
                   type="number"
                   min={1}
                   placeholder={"1 hu\u00E9sped"}
@@ -456,7 +550,10 @@ export function PublicHomePage({
                 <SelectBookingField
                   label="Alojamiento"
                   value={searchForm.unitId}
-                  onChange={(value) => setSearchForm((current) => ({ ...current, unitId: value }))}
+                  onChange={(value) => {
+                    setSearchForm((current) => ({ ...current, unitId: value }));
+                    setBookingDraft((current) => normalizeBookingDraft({ ...current, unitId: value }));
+                  }}
                   options={[
                     { value: "", label: "Cualquiera" },
                     ...units.map((unit) => ({ value: unit.id, label: unit.name }))
@@ -466,7 +563,7 @@ export function PublicHomePage({
                   type="submit"
                   className="inline-flex h-[68px] items-center justify-center rounded-[16px] bg-[#39361f] px-6 text-[13px] font-extrabold uppercase tracking-[0.08em] text-white sm:h-[74px] sm:text-[14px]"
                 >
-                  {availabilityLoading ? "Consultando..." : "Ver disponibilidad"}
+                  Ver disponibilidad
                 </button>
               </form>
 
@@ -500,7 +597,7 @@ export function PublicHomePage({
                           </div>
                           <div className="flex flex-col items-start gap-3 md:items-end">
                             <p className="text-sm font-semibold text-[#9f5e2f]">
-                              Desde {formatCurrency(unit.basePricePerNight, "ARS")} / noche
+                              Desde {formatCurrency(unit.fromPricePerNight, "ARS")} / noche
                             </p>
                             <button
                               onClick={() => openBookingModal(unit.id)}
@@ -535,48 +632,50 @@ export function PublicHomePage({
       </section>
 
       <div className="relative z-30 mx-auto -mt-4 max-w-[1728px] px-4 sm:-mt-14 sm:px-8 xl:-mt-12">
-        <section className="rounded-[28px] border border-[#efe2d3] bg-[#fcfbf8] px-4 pb-6 pt-6 shadow-[0_18px_38px_rgba(108,79,48,0.08),0_38px_90px_rgba(108,79,48,0.12)] sm:rounded-[34px] sm:px-8 sm:pb-8 sm:pt-7">
+        <section
+          id="consultar-disponibilidad"
+          className="rounded-[28px] border border-[#efe2d3] bg-[#fcfbf8] px-4 pb-6 pt-6 shadow-[0_18px_38px_rgba(108,79,48,0.08),0_38px_90px_rgba(108,79,48,0.12)] sm:rounded-[34px] sm:px-8 sm:pb-8 sm:pt-7"
+        >
           <div>
             <h2 className="font-display text-[32px] leading-none tracking-[-0.055em] text-[#2b2118] sm:text-[40px] lg:text-[42px]">
-              {"\u00BFCu\u00E1ndo quer\u00E9s venir?"}
+              ¿Cuándo querés venir?
             </h2>
             <p className="mt-3 text-[15px] text-[#78675a] sm:text-[16px]">
-              {"Consult\u00E1 disponibilidad sin compromiso. Te respondemos a la brevedad."}
+              Completá los datos de tu viaje para conocer las opciones disponibles.
             </p>
           </div>
 
           <form onSubmit={handleAvailabilitySubmit} className="mt-6 grid gap-3 sm:mt-8 sm:gap-4 xl:grid-cols-[1fr_1fr_1fr_1fr_236px] xl:items-end">
-            <BookingField
-              label="Check-in"
-              value={searchForm.checkIn}
-              icon={Calendar}
-              onChange={(value) => setSearchForm((current) => ({ ...current, checkIn: value }))}
-              type="date"
-              placeholder="Seleccionar fecha"
+            <DateRangePicker
+              checkIn={searchForm.checkIn}
+              checkOut={searchForm.checkOut}
+              className="xl:col-span-2"
+              onChange={({ checkIn, checkOut }) => {
+                setSearchForm((current) => ({ ...current, checkIn, checkOut }));
+                setBookingDraft((current) => normalizeBookingDraft({ ...current, checkIn, checkOut }));
+              }}
             />
             <BookingField
-              label="Check-out"
-              value={searchForm.checkOut}
-              icon={Calendar}
-              onChange={(value) => setSearchForm((current) => ({ ...current, checkOut: value }))}
-              type="date"
-              placeholder="Seleccionar fecha"
-            />
-            <BookingField
-              label={"Hu\u00E9spedes"}
+              label={"Huéspedes"}
               value={searchForm.guests}
               icon={User}
-              onChange={(value) => setSearchForm((current) => ({ ...current, guests: value }))}
-              type="number"
-              min={1}
-              placeholder={"1 hu\u00E9sped"}
-            />
+              onChange={(value) => {
+                setSearchForm((current) => ({ ...current, guests: value }));
+                setBookingDraft((current) => normalizeBookingDraft({ ...current, adults: Number(value || "1") }));
+              }}
+                  type="number"
+                  min={1}
+                  placeholder={"1 huésped"}
+                />
             <SelectBookingField
-              label="Alojamiento"
+              label="Tipo de alojamiento"
               value={searchForm.unitId}
-              onChange={(value) => setSearchForm((current) => ({ ...current, unitId: value }))}
+              onChange={(value) => {
+                setSearchForm((current) => ({ ...current, unitId: value }));
+                setBookingDraft((current) => normalizeBookingDraft({ ...current, unitId: value }));
+              }}
               options={[
-                { value: "", label: "Cualquiera" },
+                { value: "", label: "Cualquier opción" },
                 ...units.map((unit) => ({ value: unit.id, label: unit.name }))
               ]}
             />
@@ -584,11 +683,14 @@ export function PublicHomePage({
               type="submit"
               className="inline-flex h-[68px] w-full items-center justify-center self-stretch rounded-[16px] bg-[#39361f] px-6 text-[13px] font-extrabold uppercase tracking-[0.08em] text-white sm:h-[74px] sm:text-[14px] xl:self-auto"
             >
-              {availabilityLoading ? "Consultando..." : "Ver disponibilidad"}
+              Solicitar disponibilidad
             </button>
           </form>
 
           {availabilityError ? <p className="mt-4 text-sm font-medium text-red-700">{availabilityError}</p> : null}
+          <p className="mt-4 text-sm text-[#78675a]">
+            Consultar no tiene costo y no confirma automáticamente la reserva.
+          </p>
 
           {availabilityResults ? (
             <div className="mt-6 rounded-[24px] border border-[#eadfd2] bg-[#fcfaf7] p-5">
@@ -618,7 +720,7 @@ export function PublicHomePage({
                       </div>
                       <div className="flex flex-col items-start gap-3 md:items-end">
                         <p className="text-sm font-semibold text-[#9f5e2f]">
-                          Desde {formatCurrency(unit.basePricePerNight, "ARS")} / noche
+                          Desde {formatCurrency(unit.fromPricePerNight, "ARS")} / noche
                         </p>
                         <button
                           onClick={() => openBookingModal(unit.id)}
@@ -639,7 +741,7 @@ export function PublicHomePage({
                       onClick={() => openBookingModal(searchForm.unitId || undefined)}
                       className="mt-4 inline-flex h-11 items-center justify-center rounded-[14px] bg-[#9f5e2f] px-5 text-xs font-extrabold uppercase tracking-[0.14em] text-white"
                     >
-                      Enviar solicitud
+                      Solicitar reserva
                     </button>
                   </div>
                 )}
@@ -651,16 +753,19 @@ export function PublicHomePage({
 
       <section id="alojamientos" className="mx-auto grid max-w-[1728px] gap-10 px-4 pb-20 pt-24 sm:px-8 sm:pb-24 sm:pt-28 xl:grid-cols-[312px_1fr]">
         <aside className="pt-4">
-          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Alojamientos</p>
+          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Nuestros alojamientos</p>
           <h2 className="mt-5 font-display text-[52px] leading-[1.04] tracking-[-0.06em] text-[#2b2118] sm:text-[58px]">
-            {"Eleg\u00ED tu lugar ideal"}
+            Encontrá el espacio adecuado para tu viaje
           </h2>
           <p className="mt-7 max-w-[270px] text-[18px] leading-[1.85] text-[#78685b]">
-            {"Espacios c\u00F3modos y acogedores, pensados para que disfrutes de Tilcara como en casa."}
+            Conocé la capacidad, distribución, servicios y fotografías reales de cada opción antes de reservar.
           </p>
-          <button onClick={() => openBookingModal()} className="mt-8 inline-flex h-[50px] items-center justify-center rounded-[12px] border border-[#d7b18e] px-6 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e] sm:mt-10 sm:h-[54px] sm:px-8 sm:text-[12px]">
-            Ver todos los alojamientos
-          </button>
+          <a href="#contacto-directo" className="mt-8 inline-flex h-[50px] items-center justify-center rounded-[12px] border border-[#d7b18e] px-6 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e] sm:mt-10 sm:h-[54px] sm:px-8 sm:text-[12px]">
+            Recibir asesoramiento
+          </a>
+          <p className="mt-6 max-w-[270px] text-[15px] leading-7 text-[#78685b]">
+            ¿No sabés cuál elegir? Contanos cuántas personas viajan y te ayudaremos a encontrar la opción más conveniente.
+          </p>
         </aside>
 
         <div className="grid gap-5 xl:grid-cols-3">
@@ -679,7 +784,7 @@ export function PublicHomePage({
                 <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-[#8a715f]">
                   <span className="inline-flex items-center gap-1.5">
                     <User className="h-3.5 w-3.5" />
-                    {unit.maxGuests} {"hu\u00E9spedes"}
+                    Hasta {unit.maxGuests} huéspedes
                   </span>
                   <span className="inline-flex items-center gap-1.5">
                     <BedDouble className="h-3.5 w-3.5" />
@@ -687,13 +792,23 @@ export function PublicHomePage({
                   </span>
                 </div>
                 <p className="mt-4 text-[15px] leading-8 text-[#6c5b50]">{unit.shortDescription}</p>
-                <button
-                  onClick={() => openBookingModal(unit.id)}
-                  className="mt-6 inline-flex items-center gap-2 text-[13px] font-extrabold uppercase tracking-[0.12em] text-[#ae6a35]"
-                >
-                  Ver detalles
-                  <ChevronRight className="h-4 w-4" />
-                </button>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => openAccommodationModal(unit.id)}
+                    className="inline-flex items-center gap-2 text-[13px] font-extrabold uppercase tracking-[0.12em] text-[#ae6a35]"
+                  >
+                    Ver alojamiento
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={scrollToAvailability}
+                    className="inline-flex h-10 items-center justify-center rounded-[12px] border border-[#d7b18e] px-4 text-[11px] font-extrabold uppercase tracking-[0.12em] text-[#9a5d2e]"
+                    type="button"
+                  >
+                    Consultar disponibilidad
+                  </button>
+                </div>
               </div>
             </article>
           ))}
@@ -705,8 +820,11 @@ export function PublicHomePage({
           <div>
             <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Servicios</p>
             <h2 className="mt-5 font-display text-[48px] leading-[1.08] tracking-[-0.06em] text-[#2b2118] sm:text-[54px]">
-              {"Todo lo que necesit\u00E1s para una estad\u00EDa perfecta"}
+              Todo claro antes de reservar
             </h2>
+            <p className="mt-6 max-w-[300px] text-[17px] leading-[1.85] text-[#7c6b5d]">
+              Queremos que sepas exactamente qué incluye tu estadía. Si necesitás confirmar algún servicio, escribinos antes de realizar la reserva.
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-x-4 gap-y-8 md:grid-cols-4 xl:grid-cols-7">
             {SERVICE_LABELS.map((service, index) => {
@@ -725,18 +843,130 @@ export function PublicHomePage({
           </div>
         </div>
       </section>
+      <section className="relative overflow-hidden bg-[#f7f2eb]">
+        {/* Decoración de fondo */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-24 top-1/2 h-[420px] w-[420px] -translate-y-1/2 rounded-full bg-[#d9b894]/15 blur-3xl"
+        />
 
+        <div className="relative mx-auto max-w-[1728px] px-4 py-20 sm:px-8 md:py-28 lg:py-36">
+          <div className="grid items-end gap-14 lg:grid-cols-[1.25fr_0.75fr] lg:gap-24">
+            {/* Contenido principal */}
+            <div className="max-w-[900px]">
+              <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-[#9a5d2e] sm:text-[12px]">
+                Atención personalizada
+              </p>
+
+              <h2 className="mt-6 max-w-[860px] font-display text-[44px] leading-[0.98] tracking-[-0.045em] text-[#2b2118] sm:text-[58px] md:text-[72px] lg:text-[84px]">
+                Tu estadía en Tilcara empieza mucho antes de llegar.
+              </h2>
+
+              <p className="mt-8 max-w-[700px] text-[17px] leading-8 text-[#6c5b50] sm:text-[19px]">
+                Contanos cuándo querés viajar, cuántas personas son y qué tipo de
+                estadía estás buscando. Te ayudamos a consultar disponibilidad,
+                elegir la opción más conveniente y resolver todo antes de tu llegada.
+              </p>
+
+              <div className="mt-10 flex flex-col items-start gap-4 sm:flex-row sm:items-center">
+                <a
+                  href={buildWhatsAppUrl({
+                    number: siteSettings.whatsappNumber,
+                    message: whatsappMessages.general
+                  })}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group inline-flex min-h-[56px] items-center justify-center gap-3 rounded-full bg-[#201812] px-7 text-[13px] font-bold text-white transition duration-300 hover:-translate-y-0.5 hover:bg-[#9a5d2e]"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                    className="h-5 w-5"
+                  >
+                    <path
+                      d="M20.5 11.7a8.4 8.4 0 0 1-12.4 7.4L3.5 20.5l1.5-4.4A8.4 8.4 0 1 1 20.5 11.7Z"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M8.6 7.9c.2-.4.4-.4.7-.4h.4c.2 0 .4 0 .5.4l.7 1.7c.1.3.1.5-.1.7l-.6.7c-.2.2-.2.4-.1.6.4.8 1 1.5 1.7 2 .7.5 1.4.8 2.2 1 .3.1.5 0 .7-.2l.8-1c.2-.2.4-.3.7-.2l1.7.8c.3.1.5.3.5.5 0 .3-.1 1.4-.7 1.9-.6.6-1.5.9-2.4.8-1.1-.1-2.5-.5-4.2-1.5-2.3-1.4-3.8-3.4-4.2-4-.4-.6-1.1-1.9-1.1-3.2 0-1.2.6-2.1 1-2.6Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+
+                  Consultar disponibilidad
+
+                  <svg
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    aria-hidden="true"
+                    className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1"
+                  >
+                    <path
+                      d="M4 10h12M11.5 5.5 16 10l-4.5 4.5"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </a>
+
+                <p className="text-[13px] leading-5 text-[#7b6b60]">
+                  Te respondemos personalmente por WhatsApp.
+                </p>
+              </div>
+            </div>
+
+            {/* Información de confianza */}
+            <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-1">
+              <div>
+                <p className="font-display text-[34px] leading-none tracking-[-0.04em] text-[#2b2118]">
+                  Atención directa
+                </p>
+                <p className="mt-3 max-w-[360px] text-[15px] leading-7 text-[#75655a]">
+                  Sin respuestas automáticas ni procesos complicados. Hablás
+                  directamente con el equipo de Los Álamos.
+                </p>
+              </div>
+
+              <div>
+                <p className="font-display text-[34px] leading-none tracking-[-0.04em] text-[#2b2118]">
+                  Todo claro antes de viajar
+                </p>
+                <p className="mt-3 max-w-[360px] text-[15px] leading-7 text-[#75655a]">
+                  Consultá fechas, habitaciones, servicios, estacionamiento y cualquier
+                  detalle importante para tu estadía.
+                </p>
+              </div>
+
+              <div>
+                <p className="font-display text-[34px] leading-none tracking-[-0.04em] text-[#2b2118]">
+                  Recomendaciones locales
+                </p>
+                <p className="mt-3 max-w-[360px] text-[15px] leading-7 text-[#75655a]">
+                  También podemos orientarte sobre lugares para visitar y experiencias
+                  para aprovechar mejor tu paso por Tilcara.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
       <section id="galeria" className="mx-auto grid max-w-[1728px] gap-10 px-4 py-16 sm:px-8 sm:py-20 xl:grid-cols-[312px_1fr]">
         <aside className="pt-3">
-          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">{"Galer\u00EDa"}</p>
+          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Galería</p>
           <h2 className="mt-5 font-display text-[48px] leading-[1.08] tracking-[-0.06em] text-[#2b2118] sm:text-[52px]">
-            {"Conoc\u00E9 Los \u00C1lamos"}
+            Conocé Los Álamos antes de llegar
           </h2>
           <p className="mt-6 max-w-[260px] text-[17px] leading-[1.85] text-[#7c6b5d]">
-            {"Ambientes c\u00E1lidos, rodeados de naturaleza y la energ\u00EDa \u00FAnica de Tilcara."}
+            Recorré las habitaciones, los espacios comunes y el exterior a través de fotografías reales del hospedaje.
           </p>
           <button className="mt-10 inline-flex h-[52px] items-center justify-center rounded-[12px] border border-[#d7b18e] px-8 text-[12px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e]">
-            {"Ver galer\u00EDa completa"}
+            Ver todas las fotos
           </button>
         </aside>
 
@@ -761,8 +991,8 @@ export function PublicHomePage({
         </div>
       </section>
 
-      <section className="border-t border-[#efe3d7]">
-        <div className="mx-auto grid max-w-[1728px] gap-10 px-4 py-16 sm:px-8 xl:grid-cols-[1.15fr_1.1fr]">
+      <section className="hidden border-t border-[#efe3d7]">
+        <div className="mx-auto max-w-[1728px] px-4 py-16 sm:px-8">
           <div>
             <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">{"Lo que dicen nuestros hu\u00E9spedes"}</p>
             <div className="mt-6 grid gap-4 md:grid-cols-3">
@@ -818,17 +1048,17 @@ export function PublicHomePage({
             <div className="overflow-hidden rounded-[18px] border border-[#eadfd3] bg-[#eef1e8]">
               <iframe
                 title="Mapa Los Álamos Tilcara"
-                src={`https://www.google.com/maps?q=${siteSettings.coordinates.lat},${siteSettings.coordinates.lng}&z=15&output=embed`}
+                src={EXACT_GOOGLE_MAPS_EMBED_URL}
                 className="h-[390px] w-full border-0"
                 loading="lazy"
-                referrerPolicy="no-referrer-when-downgrade"
+                referrerPolicy="strict-origin-when-cross-origin"
               />
             </div>
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-[1728px] px-4 pb-14 sm:px-8">
+      <section className="hidden mx-auto max-w-[1728px] px-4 pb-14 sm:px-8">
         <div className="flex flex-col gap-6 rounded-[24px] bg-[linear-gradient(90deg,#3b3925_0%,#2f2d1d_100%)] px-6 py-8 text-white shadow-[0_20px_60px_rgba(31,27,18,0.18)] lg:flex-row lg:items-center lg:justify-between lg:px-10">
           <div className="flex items-start gap-5">
             <div className="flex h-16 w-16 items-center justify-center rounded-[16px] border border-white/20 bg-white/5">
@@ -873,7 +1103,152 @@ export function PublicHomePage({
         </div>
       </section>
 
-      <footer id="contacto" className="border-t border-[#eaded1] bg-[#fbf8f3]">
+      <section className="border-t border-[#efe3d7]">
+        <div className="mx-auto max-w-[1728px] px-4 py-16 sm:px-8">
+          {showPublishedTestimonials ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              {testimonials.slice(0, 3).map((item) => (
+                <article key={item.author} className="rounded-[16px] border border-[#ece0d4] bg-white p-5 shadow-[0_8px_30px_rgba(91,69,42,0.04)]">
+                  <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Experiencias reales</p>
+                  <p className="mt-4 text-[14px] leading-8 text-[#655549]">{`"${item.quote}"`}</p>
+                  <p className="mt-6 text-[14px] font-semibold text-[#2b2118]">{item.author}</p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-[24px] border border-[#eadfd2] bg-white px-6 py-8 shadow-[0_8px_30px_rgba(91,69,42,0.04)]">
+              <h3 className="font-display text-[38px] leading-none tracking-[-0.05em] text-[#2b2118]">
+                ¿Ya te hospedaste en Los Álamos?
+              </h3>
+              <p className="mt-4 max-w-[680px] text-[16px] leading-8 text-[#655549]">
+                Tu opinión puede ayudar a otros viajeros a organizar su estadía en Tilcara.
+              </p>
+              {siteSettings.googleReviewsUrl ? (
+                <a
+                  href={siteSettings.googleReviewsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-6 inline-flex h-[50px] items-center justify-center rounded-[12px] border border-[#d7b18e] px-6 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e]"
+                >
+                  Dejar una reseña en Google
+                </a>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </section>
+      <section id="ubicacion" className="mx-auto grid max-w-[1728px] gap-5 px-4 py-16 sm:px-8 lg:grid-cols-[0.88fr_1.12fr]">
+        <div className="pt-1">
+          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Ubicación</p>
+          <h2 className="mt-5 font-display text-[46px] leading-[1.04] tracking-[-0.06em] text-[#2b2118] sm:text-[50px]">
+            Hospedate en Tilcara y recorré la Quebrada
+          </h2>
+          <p className="mt-6 text-[16px] leading-8 text-[#6d5d4f]">
+            Los Álamos se encuentra en Tilcara, Jujuy. Desde aquí podés organizar visitas al centro de Tilcara y a diferentes atractivos de la Quebrada de Humahuaca.
+          </p>
+          <p className="mt-4 text-[15px] leading-7 text-[#6d5d4f]">
+            Después de confirmar tu reserva te enviaremos la ubicación exacta y las indicaciones de llegada.
+          </p>
+          <div className="mt-8 flex flex-wrap gap-3">
+            {siteSettings.googleMapsUrl ? (
+              <a
+                href={siteSettings.googleMapsUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-[50px] items-center justify-center rounded-[10px] bg-[#ab6938] px-7 text-[12px] font-extrabold uppercase tracking-[0.14em] text-white"
+              >
+                Abrir en Google Maps
+              </a>
+            ) : null}
+            <a
+              href={buildWhatsAppUrl({
+                number: siteSettings.whatsappNumber,
+                message: "Hola, quiero consultar cómo llegar a Los Álamos Tilcara."
+              })}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-[50px] items-center justify-center rounded-[10px] border border-[#d7b18e] px-7 text-[12px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e]"
+            >
+              Consultar cómo llegar
+            </a>
+          </div>
+        </div>
+        <div className="overflow-hidden rounded-[18px] border border-[#eadfd3] bg-[#eef1e8]">
+          <iframe
+            title="Mapa Los Álamos Tilcara"
+            src={EXACT_GOOGLE_MAPS_EMBED_URL}
+            className="h-[390px] w-full border-0"
+            loading="lazy"
+            referrerPolicy="strict-origin-when-cross-origin"
+          />
+        </div>
+      </section>
+
+      <section id="preguntas-frecuentes" className="mx-auto max-w-[1728px] px-4 py-4 sm:px-8">
+        <div className="rounded-[24px] border border-[#eadfd2] bg-white px-6 py-8 shadow-[0_8px_30px_rgba(91,69,42,0.04)] sm:px-8">
+          <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Preguntas frecuentes</p>
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            {landingContent.faqs.slice(0, 6).map((item) => (
+              <article key={item.id} className="rounded-[16px] border border-[#ece0d4] bg-[#fbf8f3] px-5 py-5">
+                <h3 className="text-[16px] font-semibold text-[#2b2118]">{item.question}</h3>
+                <p className="mt-3 text-[15px] leading-7 text-[#655549]">{item.answer}</p>
+              </article>
+            ))}
+          </div>
+          <button
+            className="mt-6 inline-flex h-[50px] items-center justify-center rounded-[12px] border border-[#d7b18e] px-6 text-[11px] font-extrabold uppercase tracking-[0.14em] text-[#9a5d2e]"
+            onClick={() => setActiveInfoModal("faq")}
+            type="button"
+          >
+            Ver todas las preguntas
+          </button>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-[1728px] px-4 pb-14 pt-16 sm:px-8">
+        <div className="flex flex-col gap-6 rounded-[24px] bg-[linear-gradient(90deg,#3b3925_0%,#2f2d1d_100%)] px-6 py-8 text-white shadow-[0_20px_60px_rgba(31,27,18,0.18)] lg:flex-row lg:items-center lg:justify-between lg:px-10">
+          <div className="flex items-start gap-5">
+            <div className="flex h-16 w-16 items-center justify-center rounded-[16px] border border-white/20 bg-white/5">
+              <CalendarDays className="h-8 w-8" />
+            </div>
+            <div>
+              <h3 className="font-display text-[40px] leading-none tracking-[-0.05em] text-[#fff8ef] sm:text-[45px]">
+                Tu próxima estadía en Tilcara empieza acá
+              </h3>
+              <p className="mt-3 max-w-[760px] text-[16px] text-white/82">
+                Enviá tus fechas y la cantidad de huéspedes. Te responderemos con disponibilidad, características del alojamiento y precio total.
+              </p>
+              <p className="mt-3 max-w-[760px] text-[14px] text-white/70">
+                Consultar no tiene costo. La reserva se confirma únicamente después de aceptar las condiciones y realizar el pago solicitado.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:flex sm:flex-wrap">
+            <button
+              onClick={scrollToAvailability}
+              className="inline-flex h-[54px] items-center justify-center rounded-[10px] border border-white/30 px-7 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white"
+              type="button"
+            >
+              <CalendarDays className="mr-3 h-4 w-4" />
+              Consultar disponibilidad
+            </button>
+            <a
+              href={buildWhatsAppUrl({
+                number: siteSettings.whatsappNumber,
+                message: whatsappMessages.general
+              })}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-[54px] items-center justify-center rounded-[10px] border border-white/30 px-7 text-[12px] font-extrabold uppercase tracking-[0.12em] text-white"
+            >
+              <MessageCircle className="mr-3 h-4 w-4" />
+              Escribir por WhatsApp
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <footer id="contacto" className="hidden border-t border-[#eaded1] bg-[#fbf8f3]">
         <div className="mx-auto grid max-w-[1728px] gap-10 px-4 py-16 sm:px-8 xl:grid-cols-[1.2fr_0.62fr_0.62fr_0.82fr_1fr]">
           <div>
             <div className="flex items-center gap-4">
@@ -886,7 +1261,7 @@ export function PublicHomePage({
               </div>
             </div>
             <p className="mt-7 max-w-[310px] text-[16px] leading-8 text-[#6d5d50]">
-              {"Hospedaje familiar en Tilcara, Jujuy. Atenci\u00F3n personalizada y el mejor descanso en la Quebrada de Humahuaca."}
+              Hospedaje en Tilcara, Jujuy. Un espacio tranquilo para descansar y recorrer la Quebrada de Humahuaca.
             </p>
             <div className="mt-6 flex items-center gap-4 text-[#6b594a]">
               <a href={siteSettings.instagramUrl} target="_blank" rel="noreferrer" className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#d9c7b4]">
@@ -923,10 +1298,10 @@ export function PublicHomePage({
           <div>
             <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">{"Informaci\u00F3n"}</p>
             <div className="mt-6 space-y-4 text-[15px] text-[#67574b]">
-              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("about")}>Sobre nosotros</button>
-              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("policies")}>{"Pol\u00EDticas"}</button>
-              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("faq")}>Preguntas frecuentes</button>
-              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("terms")}>{"T\u00E9rminos y condiciones"}</button>
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("about")}>C\u00F3mo reservar</button>
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("policies")}>Pol\u00EDticas de reserva</button>
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("faq")}>Cancelaciones</button>
+              <Link className="block text-left transition hover:text-[#2c221b]" href="/terminos-y-condiciones">T\u00E9rminos y condiciones</Link>
             </div>
           </div>
 
@@ -972,10 +1347,102 @@ export function PublicHomePage({
         </div>
       </footer>
 
+      <footer className="border-t border-[#eaded1] bg-[#fbf8f3]">
+        <div className="mx-auto grid max-w-[1728px] gap-10 px-4 py-16 sm:px-8 xl:grid-cols-[1.2fr_0.7fr_0.7fr_0.9fr]">
+          <div>
+            <div className="flex items-center gap-4">
+              <div className="flex h-[70px] w-[70px] items-center justify-center rounded-full border border-[#d6c1a4] text-[#69553e]">
+                <Trees className="h-8 w-8" />
+              </div>
+              <div>
+                <p className="font-display text-[42px] leading-none tracking-[-0.05em] text-[#2b2118]">Los Álamos</p>
+                <p className="mt-1 pl-1 text-[10px] uppercase tracking-[0.48em] text-[#7d6958]">Tilcara</p>
+              </div>
+            </div>
+            <p className="mt-7 max-w-[330px] text-[16px] leading-8 text-[#6d5d50]">
+              Hospedaje en Tilcara, Jujuy. Un espacio tranquilo para descansar y recorrer la Quebrada de Humahuaca.
+            </p>
+          </div>
+
+          <div>
+            <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Navegación</p>
+            <div className="mt-6 space-y-4 text-[15px] text-[#67574b]">
+              {NAV_ITEMS.map((item) => (
+                <a key={item.label} href={item.href} className="block transition hover:text-[#2c221b]">
+                  {item.label}
+                </a>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Información</p>
+            <div className="mt-6 space-y-4 text-[15px] text-[#67574b]">
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("about")}>Cómo reservar</button>
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("policies")}>Políticas de reserva</button>
+              <button className="block text-left transition hover:text-[#2c221b]" onClick={() => setActiveInfoModal("faq")}>Preguntas frecuentes</button>
+              <Link className="block text-left transition hover:text-[#2c221b]" href="/terminos-y-condiciones">Términos y condiciones</Link>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-[#b77544]">Contacto</p>
+            <div className="mt-6 space-y-4 text-[15px] text-[#67574b]">
+              <div className="flex items-start gap-3">
+                <MapPin className="mt-0.5 h-4 w-4 text-[#a56431]" />
+                <span>{showAddress ? siteSettings.address : "Tilcara, Jujuy, Argentina"}</span>
+              </div>
+              {showPhone ? (
+                <div className="flex items-start gap-3">
+                  <Phone className="mt-0.5 h-4 w-4 text-[#a56431]" />
+                  <span>{siteSettings.phone}</span>
+                </div>
+              ) : null}
+              {showEmail ? (
+                <div className="flex items-start gap-3">
+                  <Mail className="mt-0.5 h-4 w-4 text-[#a56431]" />
+                  <span>{siteSettings.email}</span>
+                </div>
+              ) : null}
+              <a
+                href={buildWhatsAppUrl({
+                  number: siteSettings.whatsappNumber,
+                  message: whatsappMessages.general
+                })}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-3 text-[#67574b] transition hover:text-[#2c221b]"
+              >
+                <MessageCircle className="h-4 w-4 text-[#a56431]" />
+                WhatsApp
+              </a>
+              <a href={siteSettings.instagramUrl} target="_blank" rel="noreferrer" className="block transition hover:text-[#2c221b]">
+                Instagram
+              </a>
+              <a href={siteSettings.facebookUrl} target="_blank" rel="noreferrer" className="block transition hover:text-[#2c221b]">
+                Facebook
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-[#eaded1]">
+          <div className="mx-auto flex max-w-[1728px] flex-col gap-3 px-4 py-6 text-[12px] text-[#8c7a6b] sm:px-8 xl:flex-row xl:items-center xl:justify-between">
+            <p>© 2026 Los Álamos Tilcara. Todos los derechos reservados.</p>
+            <a href="#top" className="inline-flex items-center gap-2">
+              Volver arriba
+              <CircleArrowUp className="h-4 w-4" />
+            </a>
+          </div>
+        </div>
+      </footer>
+
       <PublicBookingModal
-        defaultValues={bookingModalPrefill}
+        defaultValues={bookingDraft}
         defaultUnitId={bookingModalUnitId}
+        depositPercentage={siteSettings.depositPercentage}
         onClose={() => setBookingModalOpen(false)}
+        onDraftChange={setBookingDraft}
         open={bookingModalOpen}
         units={units}
       />
@@ -988,6 +1455,15 @@ export function PublicHomePage({
         })}
       />
       <PublicInquiryModal onClose={() => setInquiryModalOpen(false)} open={inquiryModalOpen} />
+      <AccommodationModal
+        open={Boolean(selectedAccommodationUnit)}
+        unit={selectedAccommodationUnit}
+        onClose={() => setSelectedAccommodationUnitId(null)}
+        onReserve={(unitId) => {
+          setSelectedAccommodationUnitId(null);
+          openBookingModal(unitId);
+        }}
+      />
       <PublicInfoModal content={landingContent} modalId={activeInfoModal} onClose={() => setActiveInfoModal(null)} />
     </main>
   );
@@ -1006,7 +1482,7 @@ function BookingField({
   value: string;
   icon: typeof Calendar;
   onChange: (value: string) => void;
-  type: "date" | "number";
+  type: "number";
   min?: number;
   placeholder?: string;
 }) {
@@ -1022,7 +1498,6 @@ function BookingField({
           type={type}
           value={value}
         />
-        {type === "date" ? <CalendarDays className="h-4 w-4 shrink-0 text-[#201814]" /> : null}
         <Icon className="h-4 w-4 shrink-0 text-[var(--color-accent-strong)]" />
       </span>
     </label>
@@ -1104,22 +1579,25 @@ function ModalFrame({
 function PublicBookingModal({
   defaultValues,
   defaultUnitId,
+  depositPercentage,
   onClose,
+  onDraftChange,
   open,
   units
 }: {
   defaultValues?: BookingPrefill;
   defaultUnitId?: string;
+  depositPercentage: number;
   onClose: () => void;
+  onDraftChange: React.Dispatch<React.SetStateAction<BookingPrefill>>;
   open: boolean;
   units: Unit[];
 }) {
+  const { runBlockingAction } = useAppFeedback();
   const [requestId, setRequestId] = useState<string | null>(null);
   const [maskedEmail, setMaskedEmail] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [otpStep, setOtpStep] = useState<"form" | "otp" | "done">("form");
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [resendLoading, setResendLoading] = useState(false);
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -1144,22 +1622,39 @@ function PublicBookingModal({
   const watchedUnitId = form.watch("unitId");
   const watchedCheckIn = form.watch("checkIn");
   const watchedCheckOut = form.watch("checkOut");
+  const watchedFullName = form.watch("fullName");
+  const watchedPhone = form.watch("phone");
+  const watchedEmail = form.watch("email");
+  const watchedCity = form.watch("city");
+  const watchedCountry = form.watch("country");
+  const watchedAdults = form.watch("adults");
+  const watchedSpecialNotes = form.watch("specialNotes");
+  const watchedEstimatedArrivalTime = form.watch("estimatedArrivalTime");
   const selectedUnit = useMemo(
     () => units.find((unit) => unit.id === watchedUnitId),
     [units, watchedUnitId]
+  );
+  const selectedAdultRate = useMemo(
+    () => selectedUnit?.adultPriceRates.find((rate) => rate.active && rate.adults === watchedAdults),
+    [selectedUnit, watchedAdults]
   );
   const pricingPreview = useMemo(
     () =>
       buildPricingPreview({
         checkIn: watchedCheckIn,
         checkOut: watchedCheckOut,
-        basePricePerNight: selectedUnit?.basePricePerNight,
-        cleaningFee: selectedUnit?.cleaningFee
+        pricePerNight: selectedAdultRate?.pricePerNight,
+        cleaningFee: selectedUnit?.cleaningFee,
+        depositPercentage
       }),
-    [selectedUnit, watchedCheckIn, watchedCheckOut]
+    [depositPercentage, selectedAdultRate?.pricePerNight, selectedUnit?.cleaningFee, watchedCheckIn, watchedCheckOut]
   );
 
   useEffect(() => {
+    if (!open) {
+      return;
+    }
+
     form.reset({
       adults: defaultValues?.adults ?? 2,
       children: defaultValues?.children ?? 0,
@@ -1174,16 +1669,41 @@ function PublicBookingModal({
       specialNotes: defaultValues?.specialNotes ?? "",
       estimatedArrivalTime: defaultValues?.estimatedArrivalTime ?? ""
     });
-    setRequestId(null);
-    setMaskedEmail(null);
-    setOtpCode("");
-    setOtpStep("form");
-    setOtpLoading(false);
-    setResendLoading(false);
-    setSubmittedCode(null);
-    setCheckoutUrl(null);
-    setRequestError(null);
-  }, [defaultUnitId, defaultValues, form, open]);
+  }, [defaultUnitId, form, open]);
+
+  useEffect(() => {
+    onDraftChange((current) =>
+      normalizeBookingDraft({
+        ...current,
+        adults: Number(watchedAdults ?? defaultValues?.adults ?? 2),
+        children: 0,
+        checkIn: watchedCheckIn,
+        checkOut: watchedCheckOut,
+        unitId: watchedUnitId,
+        fullName: watchedFullName,
+        phone: watchedPhone,
+        email: watchedEmail,
+        city: watchedCity,
+        country: watchedCountry,
+        specialNotes: watchedSpecialNotes,
+        estimatedArrivalTime: watchedEstimatedArrivalTime
+      })
+    );
+  }, [
+    onDraftChange,
+    defaultValues?.adults,
+    watchedAdults,
+    watchedCity,
+    watchedCheckIn,
+    watchedCheckOut,
+    watchedCountry,
+    watchedEmail,
+    watchedEstimatedArrivalTime,
+    watchedFullName,
+    watchedPhone,
+    watchedSpecialNotes,
+    watchedUnitId
+  ]);
 
   async function onSubmit(values: ReservationFormValues) {
     setRequestId(null);
@@ -1193,18 +1713,33 @@ function PublicBookingModal({
     setRequestError(null);
 
     try {
-      const response = await fetch("/api/reservation-requests/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values)
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/reservation-requests/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values)
+          });
 
-      if (!response.ok) {
-        const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "No pudimos iniciar la reserva.");
-      }
+          const payload = (await response.json().catch(() => null)) as
+            | { requestId?: string; maskedEmail?: string; error?: string }
+            | null;
 
-      const data = (await response.json()) as { requestId: string; maskedEmail: string };
+          if (!response.ok || !payload?.requestId || !payload?.maskedEmail) {
+            throw new Error(payload?.error ?? "No pudimos iniciar la reserva.");
+          }
+
+          return {
+            requestId: payload.requestId,
+            maskedEmail: payload.maskedEmail
+          };
+        },
+        {
+          loadingMessage: "Estamos iniciando tu solicitud de reserva.",
+          successMessage: "Te enviamos el codigo de verificacion por email."
+        }
+      );
+
       setRequestId(data.requestId);
       setMaskedEmail(data.maskedEmail);
       setOtpStep("otp");
@@ -1223,41 +1758,58 @@ function PublicBookingModal({
       return;
     }
 
-    setOtpLoading(true);
     setRequestError(null);
 
     try {
-      const verifyResponse = await fetch("/api/reservation-requests/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId,
-          code: otpCode
-        })
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const verifyResponse = await fetch("/api/reservation-requests/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId,
+              code: otpCode
+            })
+          });
 
-      if (!verifyResponse.ok) {
-        const errorPayload = (await verifyResponse.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "otp_failed");
-      }
+          const verifyPayload = (await verifyResponse.json().catch(() => null)) as
+            | { error?: string }
+            | null;
 
-      const checkoutResponse = await fetch("/api/reservation-requests/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId
-        })
-      });
+          if (!verifyResponse.ok) {
+            throw new Error(verifyPayload?.error ?? "No pudimos validar el codigo.");
+          }
 
-      if (!checkoutResponse.ok) {
-        const errorPayload = (await checkoutResponse.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "checkout_failed");
-      }
+          const checkoutResponse = await fetch("/api/reservation-requests/checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId
+            })
+          });
 
-      const data = (await checkoutResponse.json()) as { reservationCode: string; checkoutUrl?: string | null };
-      if (!data.checkoutUrl) {
-        throw new Error("No pudimos iniciar el checkout de Mercado Pago.");
-      }
+          const checkoutPayload = (await checkoutResponse.json().catch(() => null)) as
+            | { reservationCode?: string; checkoutUrl?: string | null; error?: string }
+            | null;
+
+          if (!checkoutResponse.ok) {
+            throw new Error(checkoutPayload?.error ?? "No pudimos generar el checkout.");
+          }
+
+          if (!checkoutPayload?.checkoutUrl || !checkoutPayload.reservationCode) {
+            throw new Error("No pudimos iniciar el checkout de Mercado Pago.");
+          }
+
+          return {
+            reservationCode: checkoutPayload.reservationCode,
+            checkoutUrl: checkoutPayload.checkoutUrl
+          };
+        },
+        {
+          loadingMessage: "Estamos validando el codigo y preparando el pago.",
+          successMessage: "Codigo validado. Redirigiendo al checkout."
+        }
+      );
 
       setSubmittedCode(data.reservationCode);
       setCheckoutUrl(data.checkoutUrl);
@@ -1269,8 +1821,6 @@ function PublicBookingModal({
           ? error.message
           : "No pudimos validar el código o generar el checkout."
       );
-    } finally {
-      setOtpLoading(false);
     }
   }
 
@@ -1280,24 +1830,34 @@ function PublicBookingModal({
       return;
     }
 
-    setResendLoading(true);
     setRequestError(null);
 
     try {
-      const response = await fetch("/api/reservation-requests/resend-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId
-        })
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/reservation-requests/resend-otp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId
+            })
+          });
 
-      if (!response.ok) {
-        const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "resend_failed");
-      }
+          const payload = (await response.json().catch(() => null)) as
+            | { maskedEmail?: string; error?: string }
+            | null;
 
-      const data = (await response.json()) as { maskedEmail: string };
+          if (!response.ok || !payload?.maskedEmail) {
+            throw new Error(payload?.error ?? "No pudimos reenviar el codigo.");
+          }
+
+          return { maskedEmail: payload.maskedEmail };
+        },
+        {
+          loadingMessage: "Estamos reenviando el codigo de verificacion.",
+          successMessage: "Te reenviamos el codigo por email."
+        }
+      );
       setMaskedEmail(data.maskedEmail);
     } catch (error) {
       setRequestError(
@@ -1305,8 +1865,6 @@ function PublicBookingModal({
           ? error.message
           : "No pudimos reenviar el código. Intenta nuevamente."
       );
-    } finally {
-      setResendLoading(false);
     }
   }
 
@@ -1343,22 +1901,24 @@ function PublicBookingModal({
               ))}
             </select>
           </label>
-          <label className="text-sm text-[var(--color-ink-2)]">
-            Check-in
-            <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" type="date" {...form.register("checkIn")} />
-          </label>
-          <label className="text-sm text-[var(--color-ink-2)]">
-            Check-out
-            <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" type="date" {...form.register("checkOut")} />
-          </label>
+          <div className="md:col-span-2">
+            <DateRangePicker
+              checkIn={watchedCheckIn}
+              checkOut={watchedCheckOut}
+              monthsToShow={1}
+              onChange={({ checkIn, checkOut }) => {
+                form.setValue("checkIn", checkIn, { shouldDirty: true, shouldValidate: true });
+                form.setValue("checkOut", checkOut, { shouldDirty: true, shouldValidate: true });
+              }}
+            />
+          </div>
           <label className="text-sm text-[var(--color-ink-2)]">
             Adultos
             <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" min={1} type="number" {...form.register("adults")} />
           </label>
-          <label className="text-sm text-[var(--color-ink-2)]">
-            {"Ni\u00F1os"}
-            <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" min={0} type="number" {...form.register("children")} />
-          </label>
+          <div className="rounded-[18px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-4 text-sm text-[var(--color-ink-2)]">
+            El valor se calcula segun la cantidad de adultos y las noches seleccionadas. La solicitud queda sujeta a confirmacion de disponibilidad.
+          </div>
           <label className="text-sm text-[var(--color-ink-2)] md:col-span-2">
             Notas especiales
             <Textarea className="mt-2 rounded-[16px] border-[var(--color-rule)]" {...form.register("specialNotes")} />
@@ -1374,15 +1934,26 @@ function PublicBookingModal({
             {selectedUnit && pricingPreview ? (
               <div className="mt-3 space-y-2 text-sm text-[var(--color-ink-2)]">
                 <div className="flex items-center justify-between gap-4">
-                  <span>
-                    {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"} x{" "}
-                    {formatCurrency(pricingPreview.basePricePerNight, "ARS")}
-                  </span>
+                  <span>Precio por noche</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.pricePerNight, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Noches</span>
+                  <strong className="text-[var(--color-ink)]">
+                    {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"}
+                  </strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Total alojamiento</span>
                   <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4">
                   <span>Limpieza</span>
                   <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                  <span>Sena inicial ({depositPercentage}%)</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.depositAmount, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-[var(--color-rule)] pt-2 text-base">
                   <span className="font-semibold text-[var(--color-ink)]">Total estimado</span>
@@ -1391,7 +1962,7 @@ function PublicBookingModal({
               </div>
             ) : (
               <p className="mt-3 text-sm text-[var(--color-ink-2)]">
-                Elegí una unidad y completá check-in y check-out para ver el total antes de pagar.
+                Elegi una unidad y completa check-in, check-out y adultos para ver la cotizacion.
               </p>
             )}
           </div>
@@ -1399,7 +1970,7 @@ function PublicBookingModal({
           {requestError ? <p className="text-sm text-[var(--color-danger)] md:col-span-2">{requestError}</p> : null}
           <div className="flex justify-end md:col-span-2">
             <Button className="rounded-[16px] px-6" type="submit">
-              {form.formState.isSubmitting ? "Enviando c\u00F3digo..." : "Enviar c\u00F3digo de verificaci\u00F3n"}
+              {form.formState.isSubmitting ? "Enviando codigo..." : "Solicitar reserva"}
             </Button>
           </div>
         </form>
@@ -1412,20 +1983,20 @@ function PublicBookingModal({
           {selectedUnit && pricingPreview ? (
             <div className="rounded-[18px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-4">
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                Total a pagar
+                Resumen del pago inicial
               </p>
               <div className="mt-3 space-y-2 text-sm text-[var(--color-ink-2)]">
                 <div className="flex items-center justify-between gap-4">
-                  <span>{selectedUnit.name}</span>
-                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                  <span>Precio por noche</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.pricePerNight, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <span>Limpieza</span>
-                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                  <span>Total estimado</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.total, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-[var(--color-rule)] pt-2 text-base">
-                  <span className="font-semibold text-[var(--color-ink)]">Total final</span>
-                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                  <span className="font-semibold text-[var(--color-ink)]">Sena a pagar</span>
+                  <strong className="text-[var(--color-ink)]">{formatCurrency(pricingPreview.depositAmount, "ARS")}</strong>
                 </div>
               </div>
             </div>
@@ -1444,10 +2015,10 @@ function PublicBookingModal({
           {requestError ? <p className="text-sm text-[var(--color-danger)]">{requestError}</p> : null}
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-between">
             <Button className="rounded-[16px] px-6" onClick={() => void handleOtpVerification()} type="button">
-              {otpLoading ? "Validando..." : "Validar y continuar al pago"}
+              Validar y continuar al pago
             </Button>
             <Button className="rounded-[16px] px-6" onClick={() => void handleOtpResend()} type="button" variant="outline">
-              {resendLoading ? "Reenviando..." : "Reenviar c\u00F3digo"}
+              Reenviar codigo
             </Button>
           </div>
         </div>
@@ -1483,190 +2054,9 @@ function PublicReservationLookupModal({
   open: boolean;
   supportUrl: string;
 }) {
-  const [reservation, setReservation] = useState<PublicReservationLookup | null>(null);
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const form = useForm<ReservationLookupFormValues>({
-    resolver: zodResolver(reservationLookupSchema),
-    defaultValues: {
-      email: "",
-      reservationCode: ""
-    }
-  });
-
-  useEffect(() => {
-    form.reset({
-      email: "",
-      reservationCode: ""
-    });
-    setReservation(null);
-    setRequestError(null);
-    setNotFound(false);
-  }, [form, open]);
-
-  async function onSubmit(values: ReservationLookupFormValues) {
-    setReservation(null);
-    setRequestError(null);
-    setNotFound(false);
-
-    try {
-      const response = await fetch("/api/reservations/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values)
-      });
-
-      const payload = (await response.json().catch(() => null)) as
-        | { reservation?: PublicReservationLookup; error?: string }
-        | null;
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          setNotFound(true);
-          return;
-        }
-
-        throw new Error(payload?.error ?? "No pudimos consultar la reserva. Intentalo nuevamente");
-      }
-
-      if (!payload?.reservation) {
-        throw new Error("No pudimos consultar la reserva. Intentalo nuevamente");
-      }
-
-      setReservation(payload.reservation);
-    } catch (error) {
-      setRequestError(
-        error instanceof Error
-          ? error.message
-          : "No pudimos consultar la reserva. Intentalo nuevamente"
-      );
-    }
-  }
-
-  const paymentStatusLabel = getPaymentStatusLabel(reservation?.paymentStatus);
-  const canContinuePayment =
-    reservation?.checkoutUrl &&
-    (reservation.status === "pending_payment" || reservation.status === "verified_pending_payment");
-
   return (
-    <ModalFrame onClose={onClose} open={open} title="Consultar mi reserva">
-      <p className="mb-5 text-[16px] leading-8 text-[var(--color-ink-2)]">
-        Ingres\u00e1 el email con el que hiciste la reserva y tu c\u00f3digo.
-      </p>
-      <form className="grid gap-4" onSubmit={form.handleSubmit(onSubmit)}>
-        <label className="text-sm text-[var(--color-ink-2)]">
-          Email
-          <Input className="mt-2 rounded-[16px] border-[var(--color-rule)]" type="email" {...form.register("email")} />
-          {form.formState.errors.email ? (
-            <span className="mt-2 block text-sm text-[var(--color-danger)]">
-              {form.formState.errors.email.message}
-            </span>
-          ) : null}
-        </label>
-        <label className="text-sm text-[var(--color-ink-2)]">
-          C\u00f3digo de reserva
-          <Input
-            className="mt-2 rounded-[16px] border-[var(--color-rule)]"
-            placeholder="Ej: LAT-240701"
-            {...form.register("reservationCode")}
-          />
-          {form.formState.errors.reservationCode ? (
-            <span className="mt-2 block text-sm text-[var(--color-danger)]">
-              {form.formState.errors.reservationCode.message}
-            </span>
-          ) : null}
-        </label>
-        {requestError ? <p className="text-sm text-[var(--color-danger)]">{requestError}</p> : null}
-        <div className="flex justify-end">
-          <Button className="rounded-[16px] px-6" type="submit" variant="secondary">
-            {form.formState.isSubmitting ? "Consultando..." : "Buscar reserva"}
-          </Button>
-        </div>
-      </form>
-
-      {reservation ? (
-        <div className="mt-6 space-y-4">
-          <div className="rounded-[20px] border border-[var(--color-rule)] bg-[oklch(0.98_0.01_80)] p-5">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  C\u00f3digo de reserva
-                </p>
-                <p className="mt-2 text-base font-semibold text-[var(--color-ink)]">
-                  {reservation.reservationCode}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  Alojamiento
-                </p>
-                <p className="mt-2 text-base font-semibold text-[var(--color-ink)]">{reservation.unitName}</p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  Fechas
-                </p>
-                <p className="mt-2 text-sm text-[var(--color-ink)]">
-                  {formatDate(reservation.checkIn)} al {formatDate(reservation.checkOut)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  Hu\u00e9spedes
-                </p>
-                <p className="mt-2 text-sm text-[var(--color-ink)]">
-                  {reservation.adults} adultos
-                  {reservation.children > 0 ? `, ${reservation.children} ni\u00f1os` : ""}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  Estado de reserva
-                </p>
-                <p className="mt-2 text-sm font-semibold text-[var(--color-ink)]">
-                  {getReservationStatusLabel(reservation.status)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                  Estado de pago
-                </p>
-                <p className="mt-2 text-sm font-semibold text-[var(--color-ink)]">
-                  {paymentStatusLabel ?? "Sin informaci\u00f3n de pago"}
-                </p>
-              </div>
-            </div>
-            <div className="mt-4 border-t border-[var(--color-rule)] pt-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--color-ink-2)]">
-                Total
-              </p>
-              <p className="mt-2 text-lg font-semibold text-[var(--color-ink)]">
-                {formatCurrency(reservation.totalAmount, reservation.currency)}
-              </p>
-            </div>
-          </div>
-          {canContinuePayment ? (
-            <a className="hallmark-button-secondary inline-flex" href={reservation.checkoutUrl} rel="noreferrer" target="_blank">
-              Continuar pago
-            </a>
-          ) : null}
-        </div>
-      ) : null}
-
-      {notFound ? (
-        <div className="mt-6 rounded-[20px] border border-[var(--color-rule)] bg-[oklch(0.99_0.01_80)] p-5">
-          <p className="text-sm text-[var(--color-ink-2)]">No encontramos una reserva con esos datos.</p>
-          <a
-            className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[var(--color-accent-strong)]"
-            href={supportUrl}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <MessageCircle className="h-4 w-4" />
-            Pedir ayuda por WhatsApp
-          </a>
-        </div>
-      ) : null}
+    <ModalFrame onClose={onClose} open={open} title="Consulta privada de reserva">
+      <PublicReservationLookupPanel supportUrl={supportUrl} />
     </ModalFrame>
   );
 }
@@ -1678,6 +2068,7 @@ function PublicInquiryModal({
   onClose: () => void;
   open: boolean;
 }) {
+  const { runBlockingAction } = useAppFeedback();
   const [submittedId, setSubmittedId] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const form = useForm<InquiryFormValues>({
@@ -1695,22 +2086,38 @@ function PublicInquiryModal({
     setRequestError(null);
 
     try {
-      const response = await fetch("/api/inquiries", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values)
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/inquiries", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values)
+          });
 
-      if (!response.ok) {
-        throw new Error("inquiry_failed");
-      }
+          const payload = (await response.json().catch(() => null)) as
+            | { inquiryId?: string; inquiry?: Inquiry; error?: string }
+            | null;
 
-      const data = (await response.json()) as { inquiryId: string; inquiry: Inquiry };
+          if (!response.ok || !payload?.inquiryId) {
+            throw new Error(payload?.error ?? "No pudimos enviar tu consulta.");
+          }
+
+          return { inquiryId: payload.inquiryId };
+        },
+        {
+          loadingMessage: "Estamos enviando tu consulta.",
+          successMessage: "La consulta se envio correctamente."
+        }
+      );
+
       setSubmittedId(data.inquiryId);
-      persistInquiryToAdminDemo(data.inquiry);
       form.reset();
-    } catch {
-      setRequestError("No pudimos enviar tu consulta. Intenta nuevamente.");
+    } catch (error) {
+      setRequestError(
+        error instanceof Error
+          ? error.message
+          : "No pudimos enviar tu consulta. Intenta nuevamente."
+      );
     }
   }
 
@@ -1772,7 +2179,7 @@ function PublicInfoModal({
   }
 
   if (modalId === "policies") {
-    title = "Pol\u00EDticas";
+    title = "Políticas";
     body = (
       <div className="space-y-4">
         {content.policies.map((policy) => (
@@ -1800,18 +2207,18 @@ function PublicInfoModal({
   }
 
   if (modalId === "terms") {
-    title = "T\u00E9rminos y condiciones";
+    title = "Términos y condiciones";
     body = (
       <div className="space-y-4 text-[15px] leading-7 text-[var(--color-ink-2)]">
-        <p>{"Las solicitudes enviadas desde esta web no garantizan una reserva inmediata. Toda reserva queda sujeta a confirmaci\u00F3n manual por parte del equipo."}</p>
-        <p>{"La disponibilidad publicada es orientativa para fines de prueba. Las condiciones finales, precios y pol\u00EDticas se confirman por mensaje o email."}</p>
-        <p>{"Al enviar un formulario, acept\u00E1s que podamos contactarte para completar la gesti\u00F3n de tu consulta o solicitud de reserva."}</p>
+        <p>{"Las solicitudes enviadas desde esta web no garantizan una reserva inmediata. Toda reserva queda sujeta a confirmación manual por parte del equipo."}</p>
+        <p>{"La disponibilidad publicada es orientativa para fines de prueba. Las condiciones finales, precios y políticas se confirman por mensaje o email."}</p>
+        <p>{"Al enviar un formulario, aceptás que podamos contactarte para completar la gestión de tu consulta o solicitud de reserva."}</p>
       </div>
     );
   }
 
   return (
-    <ModalFrame onClose={onClose} open={open} title={title || "Informaci\u00F3n"}>
+    <ModalFrame onClose={onClose} open={open} title={title || "Información"}>
       {body}
     </ModalFrame>
   );

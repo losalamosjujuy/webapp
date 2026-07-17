@@ -59,6 +59,21 @@ export interface UnitImage {
   storagePath?: string;
 }
 
+export interface UnitDetailItem {
+  label: string;
+  value: string;
+}
+
+export interface AdultPriceRate {
+  id: string;
+  unitId: string;
+  adults: number;
+  pricePerNight: number;
+  active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface Unit {
   id: string;
   name: string;
@@ -70,11 +85,15 @@ export interface Unit {
   beds: string;
   bathrooms: number;
   basePricePerNight: number;
+  fromPricePerNight: number;
   cleaningFee: number;
   active: boolean;
   featuredImage: string;
   amenities: Amenity[];
   images: UnitImage[];
+  highlights: string[];
+  details: UnitDetailItem[];
+  adultPriceRates: AdultPriceRate[];
 }
 
 export interface Guest {
@@ -99,9 +118,13 @@ export interface Reservation {
   adults: number;
   children: number;
   nights: number;
+  adultsPriceRateId?: string;
+  pricePerNight: number;
   subtotal: number;
   cleaningFee: number;
   totalAmount: number;
+  depositPercentage: number;
+  depositAmount: number;
   currency: string;
   specialRequests?: string;
   estimatedArrivalTime?: string;
@@ -266,6 +289,7 @@ export interface SiteSettings {
   address: string;
   city: string;
   region: string;
+  depositPercentage: number;
   coordinates: {
     lat: number;
     lng: number;

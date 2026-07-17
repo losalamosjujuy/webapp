@@ -19,12 +19,12 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 388 123 4567",
       accommodationId: "unit-double",
       accommodationName: "Habitacion Doble",
-      checkIn: "2026-05-21",
-      checkOut: "2026-05-23",
+      checkIn: "2026-07-09",
+      checkOut: "2026-07-12",
       guests: 2,
       total: 140000,
-      status: "pending",
-      source: "Web"
+      status: "pending_payment",
+      source: "Booking.com"
     },
     {
       id: "res-01023",
@@ -33,12 +33,12 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 382 334 5678",
       accommodationId: "unit-family",
       accommodationName: "Cabana Familiar",
-      checkIn: "2026-05-24",
-      checkOut: "2026-05-27",
+      checkIn: "2026-07-11",
+      checkOut: "2026-07-16",
       guests: 4,
       total: 340000,
       status: "confirmed",
-      source: "WhatsApp"
+      source: "Airbnb"
     },
     {
       id: "res-01022",
@@ -47,12 +47,12 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 388 765 4321",
       accommodationId: "unit-triple",
       accommodationName: "Habitacion Triple",
-      checkIn: "2026-05-25",
-      checkOut: "2026-05-26",
+      checkIn: "2026-07-14",
+      checkOut: "2026-07-17",
       guests: 3,
       total: 110000,
-      status: "pending",
-      source: "Instagram"
+      status: "verified_pending_payment",
+      source: "Expedia"
     },
     {
       id: "res-01020",
@@ -61,8 +61,8 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 388 456 7890",
       accommodationId: "unit-loft",
       accommodationName: "Loft con Vista",
-      checkIn: "2026-05-26",
-      checkOut: "2026-05-29",
+      checkIn: "2026-07-18",
+      checkOut: "2026-07-23",
       guests: 2,
       total: 220000,
       status: "confirmed",
@@ -75,8 +75,8 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 380 567 8901",
       accommodationId: "unit-double",
       accommodationName: "Habitacion Doble",
-      checkIn: "2026-05-27",
-      checkOut: "2026-05-28",
+      checkIn: "2026-07-24",
+      checkOut: "2026-07-27",
       guests: 2,
       total: 70000,
       status: "canceled",
@@ -89,12 +89,12 @@ export const adminSeedState: AdminState = {
       guestPhone: "+54 9 388 670 0012",
       accommodationId: "unit-family",
       accommodationName: "Cabana Familiar",
-      checkIn: "2026-05-28",
-      checkOut: "2026-05-31",
+      checkIn: "2026-07-26",
+      checkOut: "2026-07-31",
       guests: 4,
       total: 330000,
-      status: "confirmed",
-      source: "Web"
+      status: "completed",
+      source: "WhatsApp"
     }
   ],
   payments: [],
@@ -192,53 +192,116 @@ export const adminSeedState: AdminState = {
       id: "unit-double",
       name: "Habitacion Doble",
       capacity: 2,
+      bedrooms: 1,
       beds: "1 cama doble",
+      bathrooms: 1,
       price: 90000,
+      fromPricePerNight: 90000,
+      cleaningFee: 12000,
       image: unitImages.double,
       images: [
         { id: "unit-double-image-1", url: unitImages.double, altText: "Habitacion Doble", sortOrder: 1 }
       ],
       status: "active",
-      description: "Ideal para parejas que buscan tranquilidad y descanso."
+      shortDescription: "Ideal para parejas que buscan tranquilidad y descanso.",
+      description: "Habitacion luminosa con cama doble, texturas calidas y acceso comodo a los espacios comunes.",
+      amenities: ["Wi-Fi", "Calefaccion", "Patio compartido"],
+      highlights: ["Ambiente sereno", "Muy buena para parejas", "Cerca de los espacios comunes"],
+      adultPriceRates: [
+        { id: "unit-double-rate-1", adults: 1, pricePerNight: 90000, active: true },
+        { id: "unit-double-rate-2", adults: 2, pricePerNight: 110000, active: true }
+      ],
+      details: [
+        { label: "Vista", value: "Patio interno" },
+        { label: "Ideal para", value: "Escapadas de 2 personas" }
+      ]
     },
     {
       id: "unit-triple",
       name: "Habitacion Triple",
       capacity: 3,
+      bedrooms: 1,
       beds: "1 cama doble + 1 simple",
+      bathrooms: 1,
       price: 110000,
+      fromPricePerNight: 110000,
+      cleaningFee: 15000,
       image: unitImages.triple,
       images: [
         { id: "unit-triple-image-1", url: unitImages.triple, altText: "Habitacion Triple", sortOrder: 1 }
       ],
       status: "active",
-      description: "Perfecta para amigos o familias pequeñas."
+      shortDescription: "Perfecta para amigos o familias pequenas.",
+      description: "Unidad funcional con cama principal, cama simple y espacio de guardado para una estadia practica.",
+      amenities: ["Wi-Fi", "Calefaccion", "Ropa de cama"],
+      highlights: ["Capacidad para 3", "Configuracion flexible", "Buena relacion precio/espacio"],
+      adultPriceRates: [
+        { id: "unit-triple-rate-1", adults: 1, pricePerNight: 110000, active: true },
+        { id: "unit-triple-rate-2", adults: 2, pricePerNight: 130000, active: true },
+        { id: "unit-triple-rate-3", adults: 3, pricePerNight: 150000, active: true }
+      ],
+      details: [
+        { label: "Distribucion", value: "Un solo ambiente con cama doble y simple" },
+        { label: "Ideal para", value: "Amigos o familia pequena" }
+      ]
     },
     {
       id: "unit-family",
       name: "Cabana Familiar",
       capacity: 4,
+      bedrooms: 2,
       beds: "2 camas + sofa cama",
+      bathrooms: 1,
       price: 150000,
+      fromPricePerNight: 150000,
+      cleaningFee: 18000,
       image: unitImages.family,
       images: [
         { id: "unit-family-image-1", url: unitImages.family, altText: "Cabana Familiar", sortOrder: 1 }
       ],
       status: "active",
-      description: "Espaciosa y equipada para toda la familia."
+      shortDescription: "Espaciosa y equipada para toda la familia.",
+      description: "Cabana amplia con sectores diferenciados, espacio para compartir y salida al exterior.",
+      amenities: ["Wi-Fi", "Kitchenette", "Patio", "Estacionamiento"],
+      highlights: ["Dos ambientes", "Ideal para familias", "Salida al patio"],
+      adultPriceRates: [
+        { id: "unit-family-rate-1", adults: 1, pricePerNight: 150000, active: true },
+        { id: "unit-family-rate-2", adults: 2, pricePerNight: 175000, active: true },
+        { id: "unit-family-rate-3", adults: 3, pricePerNight: 195000, active: true },
+        { id: "unit-family-rate-4", adults: 4, pricePerNight: 220000, active: true }
+      ],
+      details: [
+        { label: "Distribucion", value: "Dormitorio mas area social con camas extra" },
+        { label: "Ideal para", value: "Familias y grupos de hasta 4 personas" }
+      ]
     },
     {
       id: "unit-loft",
       name: "Loft con Vista",
       capacity: 2,
+      bedrooms: 1,
       beds: "1 cama doble",
+      bathrooms: 1,
       price: 120000,
+      fromPricePerNight: 120000,
+      cleaningFee: 14000,
       image: unitImages.loft,
       images: [
         { id: "unit-loft-image-1", url: unitImages.loft, altText: "Loft con Vista", sortOrder: 1 }
       ],
       status: "active",
-      description: "Loft amplio con vista a los cerros y balcon."
+      shortDescription: "Loft amplio con vista a los cerros y balcon.",
+      description: "Loft abierto con muy buena luz natural y una vista destacada para una experiencia mas contemplativa.",
+      amenities: ["Wi-Fi", "Vista a los cerros", "Balcon"],
+      highlights: ["Vista abierta", "Ambiente amplio", "Excelente luz natural"],
+      adultPriceRates: [
+        { id: "unit-loft-rate-1", adults: 1, pricePerNight: 120000, active: true },
+        { id: "unit-loft-rate-2", adults: 2, pricePerNight: 145000, active: true }
+      ],
+      details: [
+        { label: "Vista", value: "Cerros y entorno de Tilcara" },
+        { label: "Ideal para", value: "Parejas o viajeros que priorizan visuales" }
+      ]
     }
   ],
   inventory: [],
@@ -330,7 +393,7 @@ export const adminSeedState: AdminState = {
     },
     {
       id: "usr-2",
-      name: "Recepción",
+      name: "Recepcion",
       email: "recepcion@losalamos.com.ar",
       role: "Editor",
       status: "active",
@@ -354,24 +417,91 @@ export const adminSeedState: AdminState = {
     }
   ],
   siteContent: {
-    heroTitle: "Los Álamos Tilcara",
+    heroEyebrow: "Hospedaje en Tilcara, Jujuy",
+    heroTitle: "Los Alamos Tilcara",
     heroSubtitle: "Un lugar para descansar y conectar con la magia de la Quebrada de Humahuaca.",
     heroImage: propertyImages.hero,
+    heroTrustPoints: ["Reserva directa", "Atencion personalizada", "Ubicacion ideal"],
     aboutTitle: "Sobre nosotros",
-    aboutBody: "Hospedaje familiar en Tilcara con atención personalizada y calidez norteña.",
-    testimonialsTitle: "Lo que dicen nuestros huéspedes",
-    locationTitle: "En el corazón de Tilcara",
-    policiesTitle: "Políticas",
+    aboutBody: "Hospedaje familiar en Tilcara con atencion personalizada y calidez nortena.",
+    testimonialsTitle: "Lo que dicen nuestros huespedes",
+    locationTitle: "En el corazon de Tilcara",
+    policiesTitle: "Politicas",
     faqs: [
       {
         id: "faq-1",
-        question: "¿Cuál es el horario de check-in?",
-        answer: "El check-in comienza a las 14:00."
+        question: "Cual es el horario de check-in?",
+        answer: "El check-in comienza a las 14:00 hs. Si necesitas ingresar antes, consultanos previamente y verificaremos la disponibilidad."
       },
       {
         id: "faq-2",
-        question: "¿Tienen estacionamiento?",
-        answer: "Sí, contamos con estacionamiento sujeto a disponibilidad."
+        question: "Cual es el horario de check-out?",
+        answer: "El check-out se realiza hasta las 10:00 hs. Si necesitas extender tu estadia, comunicate con nosotros para evaluar la disponibilidad."
+      },
+      {
+        id: "faq-3",
+        question: "Como se confirma una reserva?",
+        answer: "Podes solicitar tu reserva desde la web. La misma queda confirmada una vez validado el pago de la sena y recibas nuestra confirmacion por WhatsApp o correo electronico."
+      },
+      {
+        id: "faq-4",
+        question: "Que medios de pago aceptan?",
+        answer: "Aceptamos transferencias bancarias y otros medios de pago. Consultanos para conocer las opciones disponibles al momento de reservar."
+      },
+      {
+        id: "faq-5",
+        question: "Se necesita una sena para reservar?",
+        answer: "Si. Para garantizar la reserva solicitamos una sena. El monto y las condiciones seran informados durante el proceso de reserva."
+      },
+      {
+        id: "faq-6",
+        question: "Puedo cancelar o modificar mi reserva?",
+        answer: "Si, aunque las condiciones dependen de la anticipacion con la que se solicite el cambio. Te recomendamos consultar nuestra politica de cancelacion antes de confirmar la reserva."
+      },
+      {
+        id: "faq-7",
+        question: "El desayuno esta incluido?",
+        answer: "Si, el desayuno esta incluido cuando asi se indique en la tarifa seleccionada. Si tenes dudas, podes consultarnos antes de reservar."
+      },
+      {
+        id: "faq-8",
+        question: "Tienen estacionamiento?",
+        answer: "Si, contamos con estacionamiento sujeto a disponibilidad."
+      },
+      {
+        id: "faq-9",
+        question: "Aceptan mascotas?",
+        answer: "Depende de la unidad y de la disponibilidad. Consultanos antes de realizar la reserva."
+      },
+      {
+        id: "faq-10",
+        question: "Hay Wi-Fi?",
+        answer: "Si, ofrecemos conexion Wi-Fi gratuita para todos nuestros huespedes."
+      },
+      {
+        id: "faq-11",
+        question: "Las habitaciones cuentan con bano privado?",
+        answer: "Si, todas nuestras habitaciones disponen de bano privado y las comodidades indicadas en la descripcion."
+      },
+      {
+        id: "faq-12",
+        question: "Donde estan ubicados?",
+        answer: "Nos encontramos en Tilcara, Jujuy, en una ubicacion ideal para recorrer la Quebrada de Humahuaca y sus principales atractivos."
+      },
+      {
+        id: "faq-13",
+        question: "Como puedo comunicarme?",
+        answer: "Podes escribirnos por WhatsApp, completar el formulario de contacto de la web o enviarnos un correo electronico. Respondemos lo antes posible."
+      },
+      {
+        id: "faq-14",
+        question: "Que lugares turisticos hay cerca?",
+        answer: "Desde nuestro alojamiento podras visitar el Pucara de Tilcara, el centro historico, mercados artesanales, senderos y otros atractivos de la Quebrada de Humahuaca."
+      },
+      {
+        id: "faq-15",
+        question: "Puedo reservar para grupos o familias?",
+        answer: "Si. Contamos con opciones para parejas, familias y grupos. Contactanos para ayudarte a elegir la mejor alternativa."
       }
     ],
     policies: [
@@ -382,19 +512,27 @@ export const adminSeedState: AdminState = {
       },
       {
         id: "pol-2",
-        title: "Cancelación",
-        body: "Las cancelaciones se revisan según la temporada y la anticipación."
+        title: "Cancelacion",
+        body: "Las cancelaciones se revisan segun la temporada y la anticipacion."
       }
     ]
   },
   settings: {
-    propertyName: "Los Álamos Tilcara",
+    whatsappNumber: "+54 9 388 123 4567",
+    propertyName: "Los Alamos Tilcara",
     contactEmail: "hola@losalamos.com.ar",
     phone: "+54 9 388 123 4567",
+    instagramUrl: "https://instagram.com/losalamostilcara",
+    facebookUrl: "https://facebook.com/losalamostilcara",
+    googleReviewsUrl: "https://www.google.com/search?q=Los+Alamos+Tilcara",
+    googleMapsUrl: "https://www.google.com/maps/place/Alverro+157,+Y4624+Tilcara,+Jujuy",
     currency: "ARS - Peso Argentino",
     timezone: "(GMT-03:00) Buenos Aires",
     checkInTime: "14:00",
     checkOutTime: "10:00",
-    address: "Tilcara, Jujuy, Argentina"
+    depositPercentage: 10,
+    address: "Alverro 157, Y4624 Tilcara, Jujuy",
+    city: "Tilcara",
+    region: "Jujuy, Argentina"
   }
 };

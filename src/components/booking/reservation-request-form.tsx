@@ -5,8 +5,10 @@ import { useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
+import { useAppFeedback } from "@/components/feedback/app-feedback-provider";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { buildPricingPreview } from "@/lib/pricing/pricing";
@@ -19,12 +21,11 @@ type FormValues = z.infer<typeof reservationRequestSchema>;
 type OtpStep = "form" | "otp" | "done";
 
 export function ReservationRequestForm({ units }: { units: Unit[] }) {
+  const { runBlockingAction } = useAppFeedback();
   const [requestId, setRequestId] = useState<string | null>(null);
   const [maskedEmail, setMaskedEmail] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState("");
   const [otpStep, setOtpStep] = useState<OtpStep>("form");
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [resendLoading, setResendLoading] = useState(false);
   const [submittedCode, setSubmittedCode] = useState<string | null>(null);
   const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -39,19 +40,25 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
   const watchedUnitId = form.watch("unitId");
   const watchedCheckIn = form.watch("checkIn");
   const watchedCheckOut = form.watch("checkOut");
+  const watchedAdults = form.watch("adults");
   const selectedUnit = useMemo(
     () => units.find((unit) => unit.id === watchedUnitId),
     [units, watchedUnitId]
+  );
+  const selectedAdultRate = useMemo(
+    () => selectedUnit?.adultPriceRates.find((rate) => rate.active && rate.adults === watchedAdults),
+    [selectedUnit, watchedAdults]
   );
   const pricingPreview = useMemo(
     () =>
       buildPricingPreview({
         checkIn: watchedCheckIn,
         checkOut: watchedCheckOut,
-        basePricePerNight: selectedUnit?.basePricePerNight,
-        cleaningFee: selectedUnit?.cleaningFee
+        pricePerNight: selectedAdultRate?.pricePerNight,
+        cleaningFee: selectedUnit?.cleaningFee,
+        depositPercentage: 10
       }),
-    [selectedUnit, watchedCheckIn, watchedCheckOut]
+    [selectedAdultRate?.pricePerNight, selectedUnit?.cleaningFee, watchedCheckIn, watchedCheckOut]
   );
 
   async function onSubmit(values: FormValues) {
@@ -62,18 +69,33 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
     setRequestError(null);
 
     try {
-      const response = await fetch("/api/reservation-requests/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(values)
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/reservation-requests/start", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values)
+          });
 
-      if (!response.ok) {
-        const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "No pudimos iniciar la reserva.");
-      }
+          const payload = (await response.json().catch(() => null)) as
+            | { requestId?: string; maskedEmail?: string; error?: string }
+            | null;
 
-      const data = (await response.json()) as { requestId: string; maskedEmail: string };
+          if (!response.ok || !payload?.requestId || !payload?.maskedEmail) {
+            throw new Error(payload?.error ?? "No pudimos iniciar la reserva.");
+          }
+
+          return {
+            requestId: payload.requestId,
+            maskedEmail: payload.maskedEmail
+          };
+        },
+        {
+          loadingMessage: "Estamos iniciando tu solicitud de reserva.",
+          successMessage: "Te enviamos el codigo de verificacion por email."
+        }
+      );
+
       setRequestId(data.requestId);
       setMaskedEmail(data.maskedEmail);
       setOtpStep("otp");
@@ -88,41 +110,58 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
       return;
     }
 
-    setOtpLoading(true);
     setRequestError(null);
 
     try {
-      const verifyResponse = await fetch("/api/reservation-requests/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId,
-          code: otpCode
-        })
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const verifyResponse = await fetch("/api/reservation-requests/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId,
+              code: otpCode
+            })
+          });
 
-      if (!verifyResponse.ok) {
-        const errorPayload = (await verifyResponse.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "C\u00F3digo inv\u00E1lido o vencido.");
-      }
+          const verifyPayload = (await verifyResponse.json().catch(() => null)) as
+            | { error?: string }
+            | null;
 
-      const checkoutResponse = await fetch("/api/reservation-requests/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId
-        })
-      });
+          if (!verifyResponse.ok) {
+            throw new Error(verifyPayload?.error ?? "Codigo invalido o vencido.");
+          }
 
-      if (!checkoutResponse.ok) {
-        const errorPayload = (await checkoutResponse.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "No pudimos generar el checkout.");
-      }
+          const checkoutResponse = await fetch("/api/reservation-requests/checkout", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId
+            })
+          });
 
-      const data = (await checkoutResponse.json()) as { reservationCode: string; checkoutUrl?: string | null };
-      if (!data.checkoutUrl) {
-        throw new Error("No pudimos iniciar el checkout de Mercado Pago.");
-      }
+          const checkoutPayload = (await checkoutResponse.json().catch(() => null)) as
+            | { reservationCode?: string; checkoutUrl?: string | null; error?: string }
+            | null;
+
+          if (!checkoutResponse.ok) {
+            throw new Error(checkoutPayload?.error ?? "No pudimos generar el checkout.");
+          }
+
+          if (!checkoutPayload?.checkoutUrl || !checkoutPayload.reservationCode) {
+            throw new Error("No pudimos iniciar el checkout de Mercado Pago.");
+          }
+
+          return {
+            reservationCode: checkoutPayload.reservationCode,
+            checkoutUrl: checkoutPayload.checkoutUrl
+          };
+        },
+        {
+          loadingMessage: "Estamos validando el codigo y preparando el pago.",
+          successMessage: "Codigo validado. Redirigiendo al checkout."
+        }
+      );
 
       setSubmittedCode(data.reservationCode);
       setCheckoutUrl(data.checkoutUrl);
@@ -130,8 +169,6 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
       window.location.assign(data.checkoutUrl);
     } catch (error) {
       setRequestError(error instanceof Error ? error.message : "No pudimos validar el c\u00F3digo.");
-    } finally {
-      setOtpLoading(false);
     }
   }
 
@@ -141,29 +178,38 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
       return;
     }
 
-    setResendLoading(true);
     setRequestError(null);
 
     try {
-      const response = await fetch("/api/reservation-requests/resend-otp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId
-        })
-      });
+      const data = await runBlockingAction(
+        async () => {
+          const response = await fetch("/api/reservation-requests/resend-otp", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId
+            })
+          });
 
-      if (!response.ok) {
-        const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(errorPayload?.error ?? "No pudimos reenviar el c\u00F3digo.");
-      }
+          const payload = (await response.json().catch(() => null)) as
+            | { maskedEmail?: string; error?: string }
+            | null;
 
-      const data = (await response.json()) as { maskedEmail: string };
+          if (!response.ok || !payload?.maskedEmail) {
+            throw new Error(payload?.error ?? "No pudimos reenviar el codigo.");
+          }
+
+          return { maskedEmail: payload.maskedEmail };
+        },
+        {
+          loadingMessage: "Estamos reenviando el codigo de verificacion.",
+          successMessage: "Te reenviamos el codigo por email."
+        }
+      );
+
       setMaskedEmail(data.maskedEmail);
     } catch (error) {
-      setRequestError(error instanceof Error ? error.message : "No pudimos reenviar el c\u00F3digo.");
-    } finally {
-      setResendLoading(false);
+      setRequestError(error instanceof Error ? error.message : "No pudimos reenviar el codigo.");
     }
   }
 
@@ -176,8 +222,6 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
     setMaskedEmail(null);
     setOtpCode("");
     setOtpStep("form");
-    setOtpLoading(false);
-    setResendLoading(false);
     setSubmittedCode(null);
     setCheckoutUrl(null);
     setRequestError(null);
@@ -232,22 +276,24 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
                 ))}
               </select>
             </label>
-            <label className="text-sm text-sand-700">
-              Check-in
-              <Input type="date" {...form.register("checkIn")} />
-            </label>
-            <label className="text-sm text-sand-700">
-              Check-out
-              <Input type="date" {...form.register("checkOut")} />
-            </label>
+            <div className="md:col-span-2">
+              <DateRangePicker
+                checkIn={watchedCheckIn}
+                checkOut={watchedCheckOut}
+                monthsToShow={1}
+                onChange={({ checkIn, checkOut }) => {
+                  form.setValue("checkIn", checkIn, { shouldDirty: true, shouldValidate: true });
+                  form.setValue("checkOut", checkOut, { shouldDirty: true, shouldValidate: true });
+                }}
+              />
+            </div>
             <label className="text-sm text-sand-700">
               Adultos
               <Input min={1} type="number" {...form.register("adults")} />
             </label>
-            <label className="text-sm text-sand-700">
-              Ni\u00F1os
-              <Input min={0} type="number" {...form.register("children")} />
-            </label>
+            <div className="rounded-2xl border border-sand-200 bg-sand-50 p-4 text-sm text-sand-700">
+              El valor se calcula segun la cantidad de adultos y las noches seleccionadas. La solicitud queda sujeta a confirmacion de disponibilidad.
+            </div>
             <label className="text-sm text-sand-700 md:col-span-2">
               Notas especiales
               <Textarea {...form.register("specialNotes")} />
@@ -263,15 +309,26 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
               {selectedUnit && pricingPreview ? (
                 <div className="mt-3 space-y-2 text-sm text-sand-700">
                   <div className="flex items-center justify-between gap-4">
-                    <span>
-                      {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"} x{" "}
-                      {formatCurrency(pricingPreview.basePricePerNight, "ARS")}
-                    </span>
+                    <span>Precio por noche</span>
+                    <strong className="text-night">{formatCurrency(pricingPreview.pricePerNight, "ARS")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Noches</span>
+                    <strong className="text-night">
+                      {pricingPreview.nights} {pricingPreview.nights === 1 ? "noche" : "noches"}
+                    </strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Total alojamiento</span>
                     <strong className="text-night">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-4">
                     <span>Limpieza</span>
                     <strong className="text-night">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <span>Sena inicial (10%)</span>
+                    <strong className="text-night">{formatCurrency(pricingPreview.depositAmount, "ARS")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-4 border-t border-sand-200 pt-2 text-base">
                     <span className="font-semibold text-night">Total estimado</span>
@@ -280,13 +337,13 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
                 </div>
               ) : (
                 <p className="mt-3 text-sm text-sand-700">
-                  Elegí una unidad y completá check-in y check-out para ver el total antes de pagar.
+                  Elegi una unidad y completa check-in, check-out y adultos para ver la cotizacion.
                 </p>
               )}
             </div>
             <div className="flex items-end">
               <Button className="w-full" type="submit">
-                {form.formState.isSubmitting ? "Enviando c\u00F3digo..." : "Enviar c\u00F3digo de verificaci\u00F3n"}
+                {form.formState.isSubmitting ? "Enviando codigo..." : "Solicitar reserva"}
               </Button>
             </div>
           </form>
@@ -300,19 +357,19 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
           </p>
           {selectedUnit && pricingPreview ? (
             <div className="rounded-2xl border border-sand-200 bg-sand-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sand-700">Total a pagar</p>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sand-700">Resumen del pago inicial</p>
               <div className="mt-3 space-y-2 text-sm text-sand-700">
                 <div className="flex items-center justify-between gap-4">
-                  <span>{selectedUnit.name}</span>
-                  <strong className="text-night">{formatCurrency(pricingPreview.subtotal, "ARS")}</strong>
+                  <span>Precio por noche</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.pricePerNight, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4">
-                  <span>Limpieza</span>
-                  <strong className="text-night">{formatCurrency(pricingPreview.cleaningFee, "ARS")}</strong>
+                  <span>Total estimado</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.total, "ARS")}</strong>
                 </div>
                 <div className="flex items-center justify-between gap-4 border-t border-sand-200 pt-2 text-base">
-                  <span className="font-semibold text-night">Total final</span>
-                  <strong className="text-night">{formatCurrency(pricingPreview.total, "ARS")}</strong>
+                  <span className="font-semibold text-night">Sena a pagar</span>
+                  <strong className="text-night">{formatCurrency(pricingPreview.depositAmount, "ARS")}</strong>
                 </div>
               </div>
             </div>
@@ -330,10 +387,10 @@ export function ReservationRequestForm({ units }: { units: Unit[] }) {
           </label>
           <div className="flex flex-col gap-3 md:flex-row">
             <Button onClick={() => void handleOtpVerification()} type="button">
-              {otpLoading ? "Validando..." : "Validar y continuar al pago"}
+              Validar y continuar al pago
             </Button>
             <Button onClick={() => void handleOtpResend()} type="button" variant="outline">
-              {resendLoading ? "Reenviando..." : "Reenviar c\u00F3digo"}
+              Reenviar codigo
             </Button>
             <Button onClick={resetFlow} type="button" variant="ghost">
               Empezar de nuevo

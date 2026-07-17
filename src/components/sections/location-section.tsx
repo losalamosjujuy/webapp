@@ -4,9 +4,9 @@ import { MapPin, Navigation } from "lucide-react";
 import { Container } from "@/components/layout/container";
 import { Card } from "@/components/ui/card";
 import { SectionHeading } from "@/components/ui/section-heading";
-import { siteSettings } from "@/data/mock-data";
+import type { SiteSettings } from "@/types/domain";
 
-export function LocationSection() {
+export function LocationSection({ siteSettings }: { siteSettings: SiteSettings }) {
   const directionsHref = `https://www.google.com/maps/search/?api=1&query=${siteSettings.coordinates.lat},${siteSettings.coordinates.lng}`;
 
   return (
